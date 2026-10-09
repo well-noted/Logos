@@ -250,6 +250,79 @@ pub struct RunFinished {
     pub error: Option<Json>,
 }
 
+/// Params of `engine.primitives`.
+#[derive(Debug, Serialize)]
+pub struct PrimitivesParams<'a> {
+    pub extensions: &'a [&'a str],
+}
+
+/// Result of `engine.primitives`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrimitivesResult {
+    pub netlogo_version: String,
+    pub primitives: Vec<PrimitiveInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PrimitiveKind {
+    Command,
+    Reporter,
+}
+
+/// One primitive's syntax as NetLogo defines it (`org.nlogo.core.Syntax`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrimitiveInfo {
+    /// Lower case, with the extension prefix: `fd`, `nw:generate-random`.
+    pub name: String,
+    pub kind: PrimitiveKind,
+    /// The argument on the left of an infix reporter.
+    pub left: Option<ArgType>,
+    /// Arguments on the right, in order.
+    pub args: Vec<ArgType>,
+    pub returns: Option<ArgType>,
+    pub default_arg_count: u32,
+    pub minimum_arg_count: u32,
+    pub variadic: bool,
+    pub precedence: i32,
+    pub is_right_associative: bool,
+    /// Which agents may run it, as NetLogo writes it: `O` observer, `T` turtle, `P` patch,
+    /// `L` link, `-` not allowed. For example `OTPL` or `-T--`.
+    pub agent_class: String,
+    pub block_agent_class: Option<String>,
+    pub introduces_context: bool,
+    pub extension: Option<String>,
+}
+
+/// An argument or return type: NetLogo's type bit mask and its name for it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ArgType {
+    pub name: String,
+    pub mask: u32,
+}
+
+/// Params of `model.convertLegacy`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvertLegacyParams<'a> {
+    pub source_path: &'a str,
+    pub output_path: &'a str,
+}
+
+/// Result of `model.convertLegacy`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvertLegacyResult {
+    pub output_path: String,
+    /// The version line of the source file, for example `NetLogo 5.0.3`.
+    pub source_version: String,
+    /// Problems NetLogo's auto-conversion reported. The model was converted as far as it could
+    /// be; the GUI shows the same messages.
+    pub warnings: Vec<String>,
+}
+
 /// Result of `workspace.observe`. Each entry is a value or the error for that reporter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObserveResult {
@@ -376,6 +449,44 @@ mod tests {
         .unwrap();
         assert_eq!(f.reason, RunEnd::Stopped);
         assert_eq!(f.iterations, 551);
+    }
+
+    #[test]
+    fn parses_primitives_and_conversion_results() {
+        let r: PrimitivesResult = serde_json::from_value(json!({
+            "netlogoVersion": "NetLogo 7.0.4",
+            "primitives": [{"name":"of","kind":"reporter",
+                "left":{"name":"reporter block","mask":229376},
+                "args":[{"name":"agent or agentset","mask":1904}],
+                "returns":{"name":"anything","mask":8191},
+                "defaultArgCount":1,"minimumArgCount":1,"variadic":false,"precedence":11,
+                "isRightAssociative":true,"agentClass":"OTPL","blockAgentClass":"?",
+                "introducesContext":true,"extension":null}]}))
+        .unwrap();
+        let of = &r.primitives[0];
+        assert_eq!(of.kind, PrimitiveKind::Reporter);
+        assert_eq!(of.left.as_ref().unwrap().mask, 229376);
+        assert_eq!(of.args[0].name, "agent or agentset");
+        assert_eq!(of.block_agent_class.as_deref(), Some("?"));
+        assert_eq!(
+            serde_json::to_value(PrimitivesParams {
+                extensions: &["nw"]
+            })
+            .unwrap(),
+            json!({"extensions":["nw"]})
+        );
+        assert_eq!(
+            serde_json::to_value(ConvertLegacyParams {
+                source_path: "a.nlogo",
+                output_path: "a.nlogox"
+            })
+            .unwrap(),
+            json!({"sourcePath":"a.nlogo","outputPath":"a.nlogox"})
+        );
+        let c: ConvertLegacyResult = serde_json::from_value(json!({"outputPath":"a.nlogox",
+            "sourceVersion":"NetLogo 5.0.3","warnings":[]}))
+        .unwrap();
+        assert_eq!(c.source_version, "NetLogo 5.0.3");
     }
 
     #[test]
