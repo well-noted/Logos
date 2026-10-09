@@ -12,8 +12,9 @@ import java.util.Map;
 /**
  * Reads requests from the client, dispatches them, and writes responses (PROTOCOL.md).
  *
- * <p>This first version handles the engine methods that don't need NetLogo: {@code engine.hello}
- * and {@code engine.shutdown}. Workspace methods are added in later PRs.
+ * <p>{@code engine.*} methods run on the thread that reads stdin. {@code workspace.*} methods are
+ * handed to {@link Workspaces}, which runs them on each workspace's own thread and replies from
+ * there, so responses for different workspaces can arrive in any order.
  */
 public final class Bridge {
     /** Protocol version implemented by this bridge (PROTOCOL.md header). */
@@ -25,10 +26,14 @@ public final class Bridge {
     public static final int EXIT_PROTOCOL_MISMATCH = 2;
     public static final int EXIT_STREAM_ERROR = 3;
 
+    /** Time allowed for halting and disposing workspaces before the process exits (A10). */
+    static final long CLOSE_BUDGET_MILLIS = 1500;
+
     private final InputStream in;
     private final OutputStream out;
     private final PrintStream log;
     private final Object writeLock = new Object();
+    private final Workspaces workspaces;
 
     private boolean initialized = false;
     private Integer exitCode = null;
@@ -37,6 +42,7 @@ public final class Bridge {
         this.in = in;
         this.out = out;
         this.log = log;
+        this.workspaces = new Workspaces(log);
     }
 
     /**
@@ -46,6 +52,14 @@ public final class Bridge {
      * @return the process exit code
      */
     public int run() {
+        try {
+            return serve();
+        } finally {
+            workspaces.closeAll(CLOSE_BUDGET_MILLIS);
+        }
+    }
+
+    private int serve() {
         while (exitCode == null) {
             Frames.Frame frame;
             try {
@@ -106,6 +120,25 @@ public final class Bridge {
             } else {
                 throw new RpcException(RpcException.INVALID_PARAMS, "params must be an object");
             }
+            if (method.startsWith("workspace.")) {
+                if (!initialized) {
+                    throw new RpcException(RpcException.NOT_INITIALIZED,
+                            "the first request must be engine.hello");
+                }
+                final Object replyId = id;
+                workspaces.dispatch(method, params, new Workspaces.Reply() {
+                    @Override
+                    public void ok(Object result) {
+                        respondQuietly(replyId, result, null);
+                    }
+
+                    @Override
+                    public void error(RpcException e) {
+                        respondQuietly(replyId, null, e);
+                    }
+                });
+                return;
+            }
             Object result = dispatch(method, params);
             respond(id, result, null);
         } catch (RpcException e) {
@@ -134,6 +167,7 @@ public final class Bridge {
         return switch (method) {
             case "engine.hello" -> hello(params);
             case "engine.shutdown" -> {
+                workspaces.closeAll(CLOSE_BUDGET_MILLIS);
                 exitCode = EXIT_OK;
                 yield Map.of();
             }
@@ -184,6 +218,15 @@ public final class Bridge {
         send(response);
     }
 
+    /** Responds from a workspace thread, where a failed write can only be logged. */
+    private void respondQuietly(Object id, Object result, RpcException error) {
+        try {
+            respond(id, result, error);
+        } catch (IOException e) {
+            log.println("logos-bridge: output stream error: " + e.getMessage());
+        }
+    }
+
     /** Sends a JSON message. Safe to call from any thread. */
     void send(Map<String, Object> message) throws IOException {
         String json = Json.write(message);
@@ -198,7 +241,7 @@ public final class Bridge {
         return (Map<String, Object>) m;
     }
 
-    private static String stackTrace(Throwable t) {
+    static String stackTrace(Throwable t) {
         java.io.StringWriter sw = new java.io.StringWriter();
         t.printStackTrace(new java.io.PrintWriter(sw));
         return sw.toString();

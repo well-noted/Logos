@@ -61,7 +61,7 @@ The first request must be `engine.hello`. The bridge rejects every other method 
 
 ## 5. Methods
 
-Types used below: `WorkspaceId` is a positive integer. `Value` is defined in section 7. `SourceSpan` is `{ "start": int, "end": int, "file": string | null }`, character offsets into the source that failed (`file` is the `__includes` file name, or null for the model's own code).
+Types used below: `WorkspaceId` is a positive integer. `Value` is defined in section 7. `SourceSpan` is `{ "start": int, "end": int, "file": string | null }`, character offsets into the source that failed. When `file` is null, the offsets refer to the source string sent in the request (for `workspace.command` and `workspace.observe`) or to the model's code section (for `workspace.open`). Otherwise `file` names the `__includes` file. NetLogo compiles typed commands and reporters inside a wrapper, and the bridge removes the wrapper's length from the positions it reports.
 
 ### 5.1 Engine
 
@@ -124,7 +124,9 @@ result: { "workspace": WorkspaceId,
           "errors": [ { "message": string, "span": SourceSpan } ] }
 ```
 
-A model that fails to compile still produces a workspace (so the editor can show the errors). `compiled` is false and `errors` lists the problems.
+A model that fails to compile still produces a workspace (so the editor can show the errors). `compiled` is false and `errors` lists the problems. `modelVersion` is the `version` attribute of the file's `<model>` element.
+
+A file NetLogo can't read (missing, unreadable, or written by a newer NetLogo version) fails with `1004 ModelOpenFailed` and creates no workspace.
 
 **`workspace.openString`**
 
@@ -293,6 +295,9 @@ NetLogo values are encoded in JSON as:
 | agentset | `{"agentset": "turtles" \| "patches" \| "links" \| "observer", "count": int}` |
 | anonymous procedure | `{"procedure": string}` (source text) |
 | extension object (for example a `table`) | `{"extension": string, "display": string}` (the value as `show` would print it) |
+| anything else | `{"display": string}` |
+
+A turtle or link that has died is encoded as `nobody`, as NetLogo reports it.
 
 ## 8. Errors
 
