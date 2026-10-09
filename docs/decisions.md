@@ -56,9 +56,11 @@ The Rust core generates experiment designs (full factorial, LHS, Sobol, Morris s
 
 The bridge hosts many `HeadlessWorkspace` instances in one process, each on its own thread and addressed by ID. NetLogo documents that headless workspaces run independently on separate threads. Parallel experiments use one bridge per machine (or a few, if one JVM's heap becomes the limit), not one JVM per run.
 
-## D-10 Live view starts with rendered frames — proposed
+## D-10 Live view starts with rendered frames — accepted
 
-NetLogo's headless renderer can return the view as an in-memory image (`HeadlessWorkspace.exportView`). Phase 0 compares streaming those frames with streaming agent and patch state for rendering in Rust. The expected outcome is frames first (exact visual match with NetLogo, little code) and state streaming later for inspection and interaction. Spike A decides.
+NetLogo's headless renderer can return the view as an in-memory image (`HeadlessWorkspace.exportView`). Phase 0 compared streaming those frames with streaming agent and patch state for rendering in Rust. The view starts with rendered frames: they match NetLogo's own view exactly and need little code. Agent-state streaming is used for inspection and interaction, and for views NetLogo cannot draw.
+
+Spike A results on Windows (docs/phase-0-results.md): rendered frames on AA4 at 28.7 fps shown against a 30 fps cap (A4); agent state for 10,000 turtles at 30.2 updates/s against the same cap, and 219 updates/s uncapped (A5). Accepted by Thomas, 2026-10-09.
 
 ## D-11 Parser approach: hand-written lossless parser — proposed
 
