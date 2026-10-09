@@ -380,13 +380,13 @@ final class Workspaces {
         String reason;
         Map<String, Object> error = null;
         double lastViewProgress = 0;
-        long lastViewNanos = 0;
+        long nextViewDue = 0;
         long lastViewIteration = -1;
         double lastObserveProgress = 0;
         try {
             if (view != null) {
                 sendView(h, run, sequence++);
-                lastViewNanos = System.nanoTime();
+                nextViewDue = System.nanoTime() + view.minIntervalNanos();
                 lastViewIteration = 0;
             }
             while (true) {
@@ -412,12 +412,20 @@ final class Workspaces {
                 }
                 iterations++;
                 double progress = progress(h, iterations);
+                long now = System.nanoTime();
                 if (view != null && progress - lastViewProgress >= view.everyTicks()
-                        && System.nanoTime() - lastViewNanos >= view.minIntervalNanos()) {
+                        && now >= nextViewDue) {
                     sendView(h, run, sequence++);
                     lastViewProgress = progress;
-                    lastViewNanos = System.nanoTime();
                     lastViewIteration = iterations;
+                    // Due times advance by a fixed interval, so the average rate reaches
+                    // maxFps even when frames can only be sent at iteration boundaries. After
+                    // falling behind (a slow iteration) the schedule restarts from now rather
+                    // than sending a burst.
+                    nextViewDue += view.minIntervalNanos();
+                    if (nextViewDue < now) {
+                        nextViewDue = now + view.minIntervalNanos();
+                    }
                 }
                 if (observeEvery > 0 && progress - lastObserveProgress >= observeEvery) {
                     Map<String, Object> obs = observe(h, observeReporters);
