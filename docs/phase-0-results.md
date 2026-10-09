@@ -13,8 +13,8 @@ Measurements against the criteria in `docs/phase-0-spec.md`. Each entry says whe
 | A5 | Agent state at 30 updates/s with 10,000 turtles | Generated model, 10,000 moving turtles, 518 KiB frames. Windows: 30.2 updates/s at a 30 fps cap; 219 updates/s with a frame after every tick. Linux: 30.1 and 150-168. See "A5 detail". | Met |
 | A6 | 8 parallel workspaces match single runs | AA4 seeds 1-8, 150 steps, on 8 workspaces in one bridge: identical to the same runs on one workspace, on Windows and Linux. Windows: 13.2 s on 8 workspaces, 28.4 s on one. A3 also ran on 8 parallel workspaces on Windows. | Met |
 | A7 | `gis` and `nw` examples run | `GIS General Examples` (17 procedures: loading shapefiles and rasters, drawing, turtles from points and polygons, coverage, raster sampling, convolution) and `NW General Examples` (generators, centrality, clustering, Louvain, cliques, layouts) run without errors, and two workspaces with the same seed agree on every value read. Every value read is identical on Windows and Linux (see "A7 detail"). Comparison with the NetLogo GUI not done. | Met |
-| A8 | Primitive table | Not yet implemented | Open |
-| A9 | Legacy `.nlogo` conversion | Not yet implemented | Open |
+| A8 | Primitive table | Linux: `engine.primitives` returns 459 core primitives and, with `nw` and `gis` loaded, 51 and 72 extension primitives, each with argument types, return type, precedence and agent class. `table` and Windows pending. See "A8 and A9 detail". | Met (Linux) |
+| A9 | Legacy `.nlogo` conversion | Linux: Long House Valley (NetLogo 5.0.3) and Ants Benchmark (NetLogo 6.0-M4) converted by `model.convertLegacy` are byte-identical to NetLogo 7.0.4 GUI conversions made on Windows with "Skip" at the widget-size prompt (D-18). Windows run pending. | Met (Linux) |
 | A10 | Bridge exits within 2 s when stdin closes | 62 ms; 42 ms on a second run | Met |
 | A11 | Structured errors, bridge keeps running | Compiler error with span 6–8 for `crt 1 fd`; runtime error for `ask turtle 999999 [ fd 1 ]`; workspace usable afterwards | Met |
 | A12 | Observation doesn't change runs | AA4-Combined seed 7, 40 steps, agentset reporters read every step: identical to an unobserved run. With observation on the main RNG the runs diverge (20 vs 17 households at year 840). | Met |
@@ -71,6 +71,21 @@ Both processes on each platform agreed, and the two platforms agreed with each o
 - Reading, encoding, sending and decoding one frame costs about 1.9 ms on Windows and 3.5-4.5 ms on Linux, from the slowdown when every tick sends a frame.
 - The Windows run with the 30 fps cap was faster than the run with no frames. As in A4, the first setting in the test probably includes JIT warm-up; the test does not control for it.
 - Bridge tests check the frame contents against the model (positions, headings, sizes, colors as numbers and RGB lists, breeds, hidden turtles, patch order) and that a run with agent frames gives the same final state as a run without them.
+
+## A8 and A9 detail
+
+A8, `cargo test -p logos-bridge-client --test model_tools a8 -- --ignored` with `LOGOS_A8_EXTENSIONS=nw,gis` (the Linux copy of the install has only those two extensions): 582 primitives, core 459, nw 51, gis 72. Types are reported as NetLogo's bit mask plus NetLogo's name for it; for example `fd` takes `number` and runs in turtles only (`-T--`), `of` takes a `reporter block` on the left and is right-associative.
+
+A9, `cargo test -p logos-bridge-client --test model_tools a9 -- --ignored` with the files in `corpus/legacy` (corpus/README.md):
+
+| Source | Version | Compared with the GUI ("Skip") | Warnings |
+|---|---|---|---|
+| `lhv.nlogo` (Long House Valley) | NetLogo 5.0.3 | byte-identical, 66,992 bytes | none |
+| `ants-benchmark.nlogo` | NetLogo 6.0-M4 | byte-identical, 43,833 bytes | none |
+
+- NetLogo's auto-conversion rewrote the 5.0.3 code, for example `foreach potfarms [ ask ? [ ...` became `foreach potfarms [ ?1 -> ask ?1 [ ...`.
+- With "Resize and adjust positions" at the widget-size prompt, the GUI's files differ only in the widget elements (positions and sizes, and no `sizeVersion="0"`); code, info, shapes and settings are identical. That re-layout measures Swing components and is left out of the conversion (D-18).
+- The source file is unchanged after conversion, and converting to an existing output fails with `1007 FileExists`.
 
 ## A7 detail
 
