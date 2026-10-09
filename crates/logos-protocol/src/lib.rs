@@ -8,7 +8,7 @@ pub mod value;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-pub use binary::{DataFrame, DataFrameError, ViewFrame};
+pub use binary::{AgentFrame, DataFrame, DataFrameError, TurtleColumns, ViewFrame};
 pub use frame::{Frame, FrameError, Kind, read_frame, write_frame};
 pub use value::NlValue;
 
@@ -195,6 +195,9 @@ pub struct WorkspaceParams {
 pub struct RunStreams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub view: Option<StreamRate>,
+    /// Agent-state frames (section 6.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents: Option<StreamRate>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observe: Option<ObserveStream>,
 }
@@ -349,6 +352,10 @@ mod tests {
                 every_ticks: 1,
                 max_fps: 30.0,
             }),
+            agents: Some(StreamRate {
+                every_ticks: 2,
+                max_fps: 10.0,
+            }),
             observe: None,
         };
         let p = RunParams {
@@ -360,7 +367,8 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&p).unwrap(),
             json!({"workspace":2,"source":"go","repeat":null,
-                   "stream":{"view":{"everyTicks":1,"maxFps":30.0}}})
+                   "stream":{"view":{"everyTicks":1,"maxFps":30.0},
+                             "agents":{"everyTicks":2,"maxFps":10.0}}})
         );
         let f: RunFinished = serde_json::from_value(json!({"workspace":2,"run":1,
             "reason":"stopped","iterations":551,"ticks":551.0,"elapsedMillis":9000.5,
