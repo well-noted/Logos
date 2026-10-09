@@ -1,0 +1,15 @@
+[package]
+name = "logos-protocol"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Message types and framing for the Logos bridge protocol (protocol/PROTOCOL.md)"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# float_roundtrip: parse doubles exactly, so values written by Java's Double.toString come back
+# bit for bit (PROTOCOL.md section 7).
+serde_json = { version = "1", features = ["float_roundtrip"] }
+thiserror = "2"
