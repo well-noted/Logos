@@ -365,25 +365,34 @@ impl Bridge {
                 detail: e.to_string(),
             })
         };
-        {
-            let mut held = self.held.lock().unwrap();
-            if let Some(i) = held.iter().position(matches) {
-                return parse(held.remove(i).unwrap());
-            }
-        }
+        // Several threads may wait at once, each for its own run. The channel is read in short
+        // slices so that a notification one thread takes off the channel for another thread
+        // (and puts in `held`) is seen by that thread on its next pass.
+        const SLICE: Duration = Duration::from_millis(20);
         let deadline = Instant::now() + timeout;
-        let rx = self.notifications.lock().unwrap();
         loop {
+            {
+                let mut held = self.held.lock().unwrap();
+                if let Some(i) = held.iter().position(matches) {
+                    return parse(held.remove(i).unwrap());
+                }
+            }
             let left = deadline.saturating_duration_since(Instant::now());
-            match rx.recv_timeout(left) {
+            let received = self
+                .notifications
+                .lock()
+                .unwrap()
+                .recv_timeout(left.min(SLICE));
+            match received {
                 Ok(n) if matches(&n) => return parse(n),
                 Ok(n) => self.held.lock().unwrap().push_back(n),
-                Err(RecvTimeoutError::Timeout) => {
+                Err(RecvTimeoutError::Timeout) if left.is_zero() => {
                     return Err(ClientError::Timeout {
                         method: "run.finished".into(),
                         timeout,
                     });
                 }
+                Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Err(self.closed()),
             }
         }
