@@ -8,18 +8,18 @@ Measurements against the criteria in `docs/phase-0-spec.md`. Each entry says whe
 |---|---|---|---|
 | A1 | Bridge starts on NetLogo's bundled runtime from a path with spaces | NetLogo 7.0.4 on Java 17.0.2 (Oracle Corporation) from `C:\Program Files\NetLogo 7.0.4\runtime\bin\java.exe` | Met |
 | A2 | Start to first reporter result, target under 5 s | 2.91 s: handshake 0.21 s, open AA4-Combined 2.70 s, first `workspace.observe` 0.01 s. A second run: 2.95 s. | Met |
-| A3 | AA4 `N3-limit1` metrics match NetLogo's headless BehaviorSpace | Linux: 60 runs, 1,500 metric values (25 metrics, including the time-series lists) and every `[step]` count identical to NetLogo 7.0.4's table output. Windows run pending. See "A3 detail". | Met (Linux) |
+| A3 | AA4 `N3-limit1` metrics match NetLogo's headless BehaviorSpace | 60 runs, 1,500 metric values (25 metrics, including the time-series lists) and every `[step]` count identical to NetLogo 7.0.4's table output, on Windows (8 workers, 168 s) and Linux. See "A3 detail". | Met |
 | A4 | View frames at 30 fps | Viewer spike on AA4 (320 x 480 view), 30 fps cap: 324 frames received and 324 shown, 28.7 fps over 11.3 s. Bridge with a frame every iteration: 41.1 fps. See "A4 detail" below. | Met |
 | A5 | Agent state at 30 updates/s with 10,000 turtles | Not yet measured | Open |
-| A6 | 8 parallel workspaces match single runs | Linux: AA4 seeds 1-8, 150 steps, on 8 workspaces in one bridge: identical to the same runs on one workspace. A3 itself ran on 2 parallel workspaces. Windows run and timing pending. | Met (Linux) |
-| A7 | `gis` and `nw` examples run | Linux: `GIS General Examples` (17 procedures: loading shapefiles and rasters, drawing, turtles from points and polygons, coverage, raster sampling, convolution) and `NW General Examples` (generators, centrality, clustering, Louvain, cliques, layouts) run without errors, and two workspaces with the same seed agree on every value read. Comparison with the NetLogo GUI pending. | Met (Linux) |
+| A6 | 8 parallel workspaces match single runs | AA4 seeds 1-8, 150 steps, on 8 workspaces in one bridge: identical to the same runs on one workspace, on Windows and Linux. Windows: 13.2 s on 8 workspaces, 28.4 s on one. A3 also ran on 8 parallel workspaces on Windows. | Met |
+| A7 | `gis` and `nw` examples run | `GIS General Examples` (17 procedures: loading shapefiles and rasters, drawing, turtles from points and polygons, coverage, raster sampling, convolution) and `NW General Examples` (generators, centrality, clustering, Louvain, cliques, layouts) run without errors, and two workspaces with the same seed agree on every value read. Every value read is identical on Windows and Linux (see "A7 detail"). Comparison with the NetLogo GUI not done. | Met |
 | A8 | Primitive table | Not yet implemented | Open |
 | A9 | Legacy `.nlogo` conversion | Not yet implemented | Open |
 | A10 | Bridge exits within 2 s when stdin closes | 62 ms; 42 ms on a second run | Met |
 | A11 | Structured errors, bridge keeps running | Compiler error with span 6–8 for `crt 1 fd`; runtime error for `ask turtle 999999 [ fd 1 ]`; workspace usable afterwards | Met |
 | A12 | Observation doesn't change runs | AA4-Combined seed 7, 40 steps, agentset reporters read every step: identical to an unobserved run. With observation on the main RNG the runs diverge (20 vs 17 households at year 840). | Met |
 
-Measured 2026-10-09, Windows, bridge commit on `main` after merge of `phase0/rust-bridge-client`, `cargo test -p logos-bridge-client -- --ignored`.
+Measured 2026-10-09, Windows. A1, A2, A10-A12: `main` after merge of `phase0/rust-bridge-client`, `cargo test -p logos-bridge-client -- --ignored`. A3, A6, A7: branch `phase0/conformance`, `cargo test -p logos-experiment -- --ignored` and the `extensions` test.
 
 ## A3 detail
 
@@ -27,7 +27,7 @@ Measured 2026-10-09, Windows, bridge commit on `main` after merge of `phase0/rus
 
 - BehaviorSpace counts 551 steps for a run that the bridge counts as 552 iterations: it does not count the final `go` that executed `stop`. The runner reports steps the same way.
 - NetLogo's headless BehaviorSpace runs with plot updates off unless `--update-plots` is given; the bridge runs with them on. For AA4 this makes no difference to any metric. A model whose plot code changes model state or draws random numbers could differ, so the experiment runner should turn plot updates off to match BehaviorSpace (open item for Phase 1).
-- Time on Linux with 2 workers on 2 cores: 293 s for 60 runs.
+- Time for 60 runs: 168 s on Windows with 8 workers; 293 s on Linux with 2 workers on 2 cores.
 
 ## A4 detail
 
@@ -56,6 +56,24 @@ AA4-Combined, `set run-seed 3 setup`, `repeat 60 [ go ]`, run in two separate br
 | Linux, Java 21.0.12 | 860 | 15 | 231 | 654, 23, 71 |
 
 Both processes on each platform agreed, and the two platforms agreed with each other.
+
+## A7 detail
+
+`cargo test -p logos-bridge-client --test extensions -- --ignored`, `random-seed 42` before `setup`. Values were identical on Windows (Java 17.0.2) and Linux (Java 21.0.12).
+
+| Model | Reporter | Value |
+|---|---|---|
+| GIS General Examples | `count cities` | 606 |
+| | `sum [population] of cities` | 855671431 |
+| | `count cities with [ size = 3 ]` | 11 |
+| | `count citizens` | 12500 |
+| | `count patches with [ pcolor = cyan ]` | 0 |
+| | `sum [patch-population] of patches with [ patch-population > 0 ]` | 479107832881.0984 |
+| | `count patches with [ (elevation <= 0) or (elevation >= 0) ]` | 10440 |
+| NW General Examples | `count turtles` | 100 |
+| | `count links` | 960 |
+| | `length nw:louvain-communities` | 7 |
+| | `[ precision nw:betweenness-centrality 6 ] of turtle 0` | 84.379193 |
 
 ## Notes from A3
 
