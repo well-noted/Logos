@@ -69,12 +69,14 @@ Types used below: `WorkspaceId` is a positive integer. `Value` is defined in sec
 
 ```
 params: { "protocolVersion": 0, "client": string }
-result: { "protocolVersion": 0, "bridgeVersion": string, "netlogoVersion": string,
+result: { "protocolVersion": 0, "bridgeVersion": string, "netlogoVersion": string | null,
           "javaVersion": string, "javaVendor": string,
           "extensionsDirs": [string], "modelsDir": string }
 ```
 
 If `protocolVersion` differs from the bridge's, the bridge returns error `1006 ProtocolMismatch` and exits.
+
+`netlogoVersion` is read from the NetLogo jar's manifest. It is null only when NetLogo is not on the classpath, which happens in the bridge's own unit tests and never in normal use. `extensionsDirs` and `modelsDir` come from the `netlogo.extensions.dir` and `netlogo.models.dir` system properties; `extensionsDirs` lists the user extensions folder and its `.bundled` subfolder.
 
 **`engine.primitives`**
 
