@@ -51,6 +51,25 @@ How `path` is resolved:
 
 Paths always use `/`, even on Windows, and may not contain `..`.
 
+## Reference results
+
+`reference/` holds output produced by NetLogo itself, used as the expected values in conformance tests. Each file is listed in `manifest.toml` with the tag `reference`.
+
+`aa4-n3-limit1-netlogo-7.0.4.csv` was produced with NetLogo 7.0.4's headless BehaviorSpace on Windows, on NetLogo's bundled Java runtime. `netlogo-headless.bat` in 7.0.4 fails when NetLogo is installed in a path with spaces (see `docs/decisions.md`, D-17), so Java was called directly:
+
+```powershell
+$NL = "C:\Program Files\NetLogo 7.0.4"
+& "$NL\runtime\bin\java.exe" -Xmx4g "-Dfile.encoding=UTF-8" "-Djava.awt.headless=true" `
+  "-Dnetlogo.extensions.dir=$NL\extensions" "-Dnetlogo.models.dir=$NL\models" "-Dnetlogo.docs.dir=$NL" `
+  --add-exports=java.base/java.lang=ALL-UNNAMED --add-exports=java.desktop/sun.awt=ALL-UNNAMED --add-exports=java.desktop/sun.java2d=ALL-UNNAMED `
+  -cp "$NL\app\netlogo-7.0.4.jar" org.nlogo.headless.Main `
+  --model "<repo>\corpus\own\aa4-combined\AA4-Combined.nlogox" `
+  --experiment N3-limit1 `
+  --table "<repo>\corpus\reference\aa4-n3-limit1-netlogo-7.0.4.csv"
+```
+
+Headless BehaviorSpace does not update plots unless `--update-plots` is given; this file was produced without it.
+
 ## Rules
 
 - Files under `corpus/` are test fixtures. Don't edit them; add a new entry instead. `.gitattributes` stops git from changing their line endings.

@@ -16,6 +16,18 @@ license = "CC-BY-NC-SA-3.0"
 tags = ["primary", "file-io", "behaviorspace", "seeded"]
 notes = "Primary Phase 0 model (D-15). Reads data/*.txt during setup."
 
+# --- Reference results ---------------------------------------------------------
+
+[[model]]
+id = "aa4-n3-limit1.netlogo-7.0.4"
+set = "C3"
+source = "repo"
+path = "reference/aa4-n3-limit1-netlogo-7.0.4.csv"
+sha256 = "0651c62b12b10049f1e6b26f3a4b32b1e1a834989a8d77fbc6d865c366d24f44"
+license = "CC-BY-NC-SA-3.0"
+tags = ["reference", "behaviorspace-table"]
+notes = "NetLogo 7.0.4 headless BehaviorSpace table for AA4-Combined experiment N3-limit1 (Phase 0 A3). Produced on Windows with NetLogo's bundled Java 17.0.2; see corpus/README.md."
+
 # --- C1: NetLogo 7.0.4 Models Library ------------------------------------------
 
 [[model]]
