@@ -12,3 +12,6 @@ logos-protocol = { path = "../logos-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
+
+[dev-dependencies]
+quick-xml = "0.38"

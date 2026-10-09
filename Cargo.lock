@@ -227,6 +227,7 @@ name = "logos-bridge-client"
 version = "0.0.0"
 dependencies = [
  "logos-protocol",
+ "quick-xml",
  "serde",
  "serde_json",
  "thiserror",

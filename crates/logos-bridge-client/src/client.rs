@@ -11,9 +11,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use logos_protocol::{
-    CommandParams, DataFrame, HelloParams, HelloResult, Incoming, Kind, ObserveParams,
-    ObserveResult, OpenParams, OpenResult, PROTOCOL_VERSION, Request, RpcError, RunFinished,
-    RunParams, RunStreams, WorkspaceId, WorkspaceParams, read_frame, write_frame,
+    CommandParams, ConvertLegacyParams, ConvertLegacyResult, DataFrame, HelloParams, HelloResult,
+    Incoming, Kind, ObserveParams, ObserveResult, OpenParams, OpenResult, PROTOCOL_VERSION,
+    PrimitivesParams, PrimitivesResult, Request, RpcError, RunFinished, RunParams, RunStreams,
+    WorkspaceId, WorkspaceParams, read_frame, write_frame,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -220,6 +221,38 @@ impl Bridge {
         self.call_typed(
             "workspace.open",
             OpenParams { path: &path },
+            DEFAULT_TIMEOUT,
+        )
+    }
+
+    /// The syntax of every core primitive and of the given extensions' primitives (A8).
+    pub fn primitives(&self, extensions: &[&str]) -> Result<PrimitivesResult, ClientError> {
+        self.call_typed(
+            "engine.primitives",
+            PrimitivesParams { extensions },
+            DEFAULT_TIMEOUT,
+        )
+    }
+
+    /// Converts a `.nlogo` file to `.nlogox` the way NetLogo's GUI does (A9). Fails with
+    /// `FileExists` rather than replace `output`; never writes to `source`.
+    pub fn convert_legacy(
+        &self,
+        source: impl AsRef<Path>,
+        output: impl AsRef<Path>,
+    ) -> Result<ConvertLegacyResult, ClientError> {
+        let absolute = |p: &Path| {
+            std::path::absolute(p)
+                .map_err(|e| ClientError::Config(format!("cannot resolve {}: {e}", p.display())))
+        };
+        let source = absolute(source.as_ref())?;
+        let output = absolute(output.as_ref())?;
+        self.call_typed(
+            "model.convertLegacy",
+            ConvertLegacyParams {
+                source_path: &source.to_string_lossy(),
+                output_path: &output.to_string_lossy(),
+            },
             DEFAULT_TIMEOUT,
         )
     }
