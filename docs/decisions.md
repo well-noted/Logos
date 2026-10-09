@@ -98,3 +98,14 @@ Properties that matter for testing:
 - Stops itself when `year > 1350`.
 
 License: the original model's license and Thomas's modifications both need to be stated before the file is committed to the public repository.
+
+## D-16 Jupyter notebooks inside Logos — proposed
+
+Thomas suggested integrating `.ipynb` notebooks into the Logos interface, so analysis sits next to the model and its experiments.
+
+This follows from D-08 (analysis lives in Python). Points to settle before building it:
+
+- Notebooks run on a standard Jupyter kernel (`ipykernel`) started by Logos, using the Jupyter messaging protocol. Logos does not write its own kernel.
+- The kernel has the Logos Python client loaded and connected to the running project, so a notebook can read experiment results (Parquet) and provenance, and start runs.
+- Notebooks are ordinary `.ipynb` files in the project folder, so they also open in Jupyter or VS Code.
+- Placement: after the Python client exists (Phase 2), in the desktop app (Phase 3). Nothing in Phase 0 or 1 depends on it.

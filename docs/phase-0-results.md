@@ -33,8 +33,9 @@ AA4-Combined, `set run-seed 1 setup`, `workspace.run` of `go` until the model st
 | View-window spike, 30 fps cap | 11.41 s (48.4 iterations/s) | 324 received, 324 shown | 28.7 fps |
 
 - Rendering a frame (NetLogo's `exportView`, conversion to RGBA, writing to the pipe) costs about 3.8 ms, measured from the difference between "no frames" and "every iteration" on Linux and confirmed by these Windows numbers.
-- The 30 fps run finishing faster than the run with no frames is run-to-run variation (the "no frames" run is the first in the test and includes JIT warm-up). The test does not control for it. The comparison that matters is that a 30 fps view adds little to a run, and a frame per iteration adds about 20 percent for this model.
+- The 30 fps run finishing faster than the run with no frames is most likely run-to-run variation: the "no frames" run is the first in the test, so it probably includes JIT warm-up. The test does not control for this. The comparison that matters is that a 30 fps view adds little to a run, and a frame per iteration adds about 20 percent for this model.
 - The viewer showed every frame it received; display is not the bottleneck.
+- Visual check (Thomas): the animation was smooth and matched NetLogo's own view of AA4.
 - Frames can only be sent between iterations. With AA4's 20 ms iterations, the first version of the rate limiter reached 21 fps against a 30 fps cap; it was changed to schedule frames on fixed due times (commit "Bridge: schedule view frames on fixed due times").
 
 ## Cross-platform determinism
