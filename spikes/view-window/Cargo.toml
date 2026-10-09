@@ -1,0 +1,18 @@
+# Phase 0 spike: shows view frames streamed from the bridge (docs/phase-0-spec.md, A4).
+# Throwaway code; nothing outside spikes/ may depend on it.
+
+[package]
+name = "view-window"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# A separate workspace, excluded from the main one.
+[workspace]
+
+[dependencies]
+logos-bridge-client = { path = "../../crates/logos-bridge-client" }
+# Minimal window and pixel buffer, chosen because they don't commit Logos to a UI framework.
+winit = "0.30"
+softbuffer = "0.4"
