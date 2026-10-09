@@ -341,10 +341,7 @@ final class Workspaces {
         }
         Map<String, Object> stream = optionalMap(params, "stream");
         Stream view = stream(stream, "view");
-        if (stream.get("agents") != null) {
-            throw new RpcException(RpcException.INVALID_PARAMS,
-                    "agents streaming is not implemented yet");
-        }
+        Stream agents = stream(stream, "agents");
         Map<String, Object> observeSpec = optionalMap(stream, "observe");
         List<String> observeReporters = observeSpec.isEmpty() ? List.of()
                 : stringList(observeSpec, "reporters");
@@ -368,26 +365,29 @@ final class Workspaces {
                 return;
             }
             reply.ok(Map.of("run", run.id));
-            runLoop(h, run, proc, repeat, view, observeReporters, observeEvery);
+            List<Emitter> emitters = new ArrayList<>();
+            if (view != null) {
+                emitters.add(new Emitter(view, (seq, ticks) ->
+                        ViewFrame.encode(h.id, run.id, seq, ticks, h.ws.exportView())));
+            }
+            if (agents != null) {
+                emitters.add(new Emitter(agents, (seq, ticks) ->
+                        AgentState.encode(h.id, run.id, seq, ticks, h.ws.world())));
+            }
+            runLoop(h, run, proc, repeat, emitters, observeReporters, observeEvery);
         }, reply);
     }
 
-    private void runLoop(Handle h, Run run, Procedure proc, Long repeat, Stream view,
+    private void runLoop(Handle h, Run run, Procedure proc, Long repeat, List<Emitter> emitters,
             List<String> observeReporters, long observeEvery) {
         long started = System.nanoTime();
         long iterations = 0;
-        long sequence = 0;
         String reason;
         Map<String, Object> error = null;
-        double lastViewProgress = 0;
-        long nextViewDue = 0;
-        long lastViewIteration = -1;
         double lastObserveProgress = 0;
         try {
-            if (view != null) {
-                sendView(h, run, sequence++);
-                nextViewDue = System.nanoTime() + view.minIntervalNanos();
-                lastViewIteration = 0;
+            for (Emitter e : emitters) {
+                e.first(h);
             }
             while (true) {
                 drainBetweenIterations(h);
@@ -412,20 +412,8 @@ final class Workspaces {
                 }
                 iterations++;
                 double progress = progress(h, iterations);
-                long now = System.nanoTime();
-                if (view != null && progress - lastViewProgress >= view.everyTicks()
-                        && now >= nextViewDue) {
-                    sendView(h, run, sequence++);
-                    lastViewProgress = progress;
-                    lastViewIteration = iterations;
-                    // Due times advance by a fixed interval, so the average rate reaches
-                    // maxFps even when frames can only be sent at iteration boundaries. After
-                    // falling behind (a slow iteration) the schedule restarts from now rather
-                    // than sending a burst.
-                    nextViewDue += view.minIntervalNanos();
-                    if (nextViewDue < now) {
-                        nextViewDue = now + view.minIntervalNanos();
-                    }
+                for (Emitter e : emitters) {
+                    e.afterIteration(h, iterations, progress);
                 }
                 if (observeEvery > 0 && progress - lastObserveProgress >= observeEvery) {
                     Map<String, Object> obs = observe(h, observeReporters);
@@ -442,8 +430,8 @@ final class Workspaces {
                 }
             }
             // Make sure the client sees the final state.
-            if (view != null && lastViewIteration != iterations) {
-                sendView(h, run, sequence++);
+            for (Emitter e : emitters) {
+                e.last(h, iterations);
             }
         } catch (IOException e) {
             log.println("logos-bridge: output failed during run: " + e.getMessage());
@@ -502,10 +490,62 @@ final class Workspaces {
         return t < 0 ? iterations : t;
     }
 
-    private void sendView(Handle h, Run run, long sequence) throws IOException {
-        double t = h.ws.world().ticks();
-        outbox.binary(ViewFrame.encode(h.id, run.id, sequence, t < 0 ? Double.NaN : t,
-                h.ws.exportView()));
+    /** Builds one binary frame of a stream. */
+    @FunctionalInterface
+    private interface FrameSource {
+        byte[] frame(long sequence, double ticks);
+    }
+
+    /**
+     * Sends one stream's frames during a run (view or agent state). Each stream has its own
+     * sequence numbers, starting at 0 with the state before the first iteration.
+     */
+    private final class Emitter {
+        private final Stream rate;
+        private final FrameSource source;
+        private long sequence;
+        private double lastProgress;
+        private long nextDue;
+        private long lastIteration;
+
+        Emitter(Stream rate, FrameSource source) {
+            this.rate = rate;
+            this.source = source;
+        }
+
+        void first(Handle h) throws IOException {
+            send(h);
+            nextDue = System.nanoTime() + rate.minIntervalNanos();
+            lastIteration = 0;
+        }
+
+        void afterIteration(Handle h, long iterations, double progress) throws IOException {
+            long now = System.nanoTime();
+            if (progress - lastProgress < rate.everyTicks() || now < nextDue) {
+                return;
+            }
+            send(h);
+            lastProgress = progress;
+            lastIteration = iterations;
+            // Due times advance by a fixed interval, so the average rate reaches maxFps even
+            // when frames can only be sent at iteration boundaries. After falling behind (a
+            // slow iteration) the schedule restarts from now rather than sending a burst.
+            nextDue += rate.minIntervalNanos();
+            if (nextDue < now) {
+                nextDue = now + rate.minIntervalNanos();
+            }
+        }
+
+        void last(Handle h, long iterations) throws IOException {
+            if (lastIteration != iterations) {
+                send(h);
+            }
+        }
+
+        private void send(Handle h) throws IOException {
+            double t = h.ws.world().ticks();
+            outbox.binary(source.frame(sequence++, t < 0 ? Double.NaN : t));
+        }
     }
 
     /** Like onThread, for tasks that send their own reply. */
