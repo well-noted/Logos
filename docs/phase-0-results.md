@@ -13,13 +13,13 @@ Measurements against the criteria in `docs/phase-0-spec.md`. Each entry says whe
 | A5 | Agent state at 30 updates/s with 10,000 turtles | Generated model, 10,000 moving turtles, 518 KiB frames. Windows: 30.2 updates/s at a 30 fps cap; 219 updates/s with a frame after every tick. Linux: 30.1 and 150-168. See "A5 detail". | Met |
 | A6 | 8 parallel workspaces match single runs | AA4 seeds 1-8, 150 steps, on 8 workspaces in one bridge: identical to the same runs on one workspace, on Windows and Linux. Windows: 13.2 s on 8 workspaces, 28.4 s on one. A3 also ran on 8 parallel workspaces on Windows. | Met |
 | A7 | `gis` and `nw` examples run | `GIS General Examples` (17 procedures: loading shapefiles and rasters, drawing, turtles from points and polygons, coverage, raster sampling, convolution) and `NW General Examples` (generators, centrality, clustering, Louvain, cliques, layouts) run without errors, and two workspaces with the same seed agree on every value read. Every value read is identical on Windows and Linux (see "A7 detail"). Comparison with the NetLogo GUI not done. | Met |
-| A8 | Primitive table | Linux: `engine.primitives` returns 459 core primitives and, with `nw` and `gis` loaded, 51 and 72 extension primitives, each with argument types, return type, precedence and agent class. `table` and Windows pending. See "A8 and A9 detail". | Met (Linux) |
-| A9 | Legacy `.nlogo` conversion | Linux: Long House Valley (NetLogo 5.0.3) and Ants Benchmark (NetLogo 6.0-M4) converted by `model.convertLegacy` are byte-identical to NetLogo 7.0.4 GUI conversions made on Windows with "Skip" at the widget-size prompt (D-18). Windows run pending. | Met (Linux) |
+| A8 | Primitive table | `engine.primitives` returns 459 core primitives with argument types, return type, precedence and agent class. Extensions: `nw` 51 and `table` 18 on Windows; `nw` 51 and `gis` 72 on Linux. See "A8 and A9 detail". | Met |
+| A9 | Legacy `.nlogo` conversion | Long House Valley (NetLogo 5.0.3) and Ants Benchmark (NetLogo 6.0-M4) converted by `model.convertLegacy` are byte-identical to NetLogo 7.0.4 GUI conversions with "Skip" at the widget-size prompt (D-18), on Windows and Linux. See "A8 and A9 detail". | Met |
 | A10 | Bridge exits within 2 s when stdin closes | 62 ms; 42 ms on a second run | Met |
 | A11 | Structured errors, bridge keeps running | Compiler error with span 6–8 for `crt 1 fd`; runtime error for `ask turtle 999999 [ fd 1 ]`; workspace usable afterwards | Met |
 | A12 | Observation doesn't change runs | AA4-Combined seed 7, 40 steps, agentset reporters read every step: identical to an unobserved run. With observation on the main RNG the runs diverge (20 vs 17 households at year 840). | Met |
 
-Measured 2026-10-09, Windows. A1, A2, A10-A12: `main` after merge of `phase0/rust-bridge-client`, `cargo test -p logos-bridge-client -- --ignored`. A3, A6, A7: branch `phase0/conformance`, `cargo test -p logos-experiment -- --ignored` and the `extensions` test. A5: branch `phase0/agent-state`, the `agents` test.
+Measured 2026-10-09, Windows. A1, A2, A10-A12: `main` after merge of `phase0/rust-bridge-client`, `cargo test -p logos-bridge-client -- --ignored`. A3, A6, A7: branch `phase0/conformance`, `cargo test -p logos-experiment -- --ignored` and the `extensions` test. A5: branch `phase0/agent-state`, the `agents` test. A8, A9: branch `phase0/model-tools`, the `model_tools` test.
 
 ## A3 detail
 
@@ -74,9 +74,9 @@ Both processes on each platform agreed, and the two platforms agreed with each o
 
 ## A8 and A9 detail
 
-A8, `cargo test -p logos-bridge-client --test model_tools a8 -- --ignored` with `LOGOS_A8_EXTENSIONS=nw,gis` (the Linux copy of the install has only those two extensions): 582 primitives, core 459, nw 51, gis 72. Types are reported as NetLogo's bit mask plus NetLogo's name for it; for example `fd` takes `number` and runs in turtles only (`-T--`), `of` takes a `reporter block` on the left and is right-associative.
+A8, `cargo test -p logos-bridge-client --test model_tools a8 -- --ignored`. Windows (default `nw,table`): 528 primitives, core 459, nw 51, table 18. Linux with `LOGOS_A8_EXTENSIONS=nw,gis` (the Linux copy of the install has only those two extensions): 582 primitives, core 459, nw 51, gis 72. Types are reported as NetLogo's bit mask plus NetLogo's name for it; for example `fd` takes `number` and runs in turtles only (`-T--`), `of` takes a `reporter block` on the left and is right-associative.
 
-A9, `cargo test -p logos-bridge-client --test model_tools a9 -- --ignored` with the files in `corpus/legacy` (corpus/README.md):
+A9, `cargo test -p logos-bridge-client --test model_tools a9 -- --ignored` with the files in `corpus/legacy` (corpus/README.md). Same result on Windows and Linux:
 
 | Source | Version | Compared with the GUI ("Skip") | Warnings |
 |---|---|---|---|
