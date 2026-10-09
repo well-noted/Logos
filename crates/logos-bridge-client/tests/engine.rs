@@ -189,6 +189,7 @@ fn run_streams_view_frames_until_the_model_stops() {
             every_ticks: 1,
             max_fps: 1000.0,
         }),
+        agents: None,
         observe: None,
     };
     let run = bridge.run(ws, "go", None, &streams).unwrap();
@@ -241,6 +242,7 @@ fn a4_run_speed_with_and_without_frames() {
             every_ticks: 1,
             max_fps: 30.0,
         }),
+        agents: None,
         observe: None,
     });
     let (it2, ms2, f2) = measure(&RunStreams {
@@ -248,6 +250,7 @@ fn a4_run_speed_with_and_without_frames() {
             every_ticks: 1,
             max_fps: 1000.0,
         }),
+        agents: None,
         observe: None,
     });
     assert_eq!(it0, it1);

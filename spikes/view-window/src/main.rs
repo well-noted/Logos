@@ -318,6 +318,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             every_ticks: options.every,
             max_fps: options.fps,
         }),
+        agents: None,
         observe: None,
     };
     let run_id = bridge.run(ws, &options.go, None, &streams)?;
