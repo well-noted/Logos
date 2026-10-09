@@ -42,7 +42,23 @@ public final class Bridge {
         this.in = in;
         this.out = out;
         this.log = log;
-        this.workspaces = new Workspaces(log);
+        this.workspaces = new Workspaces(log, new Workspaces.Outbox() {
+            @Override
+            public void notify(String method, Map<String, Object> params) throws IOException {
+                Map<String, Object> message = new LinkedHashMap<>();
+                message.put("jsonrpc", "2.0");
+                message.put("method", method);
+                message.put("params", params);
+                send(message);
+            }
+
+            @Override
+            public void binary(byte[] payload) throws IOException {
+                synchronized (writeLock) {
+                    Frames.write(out, Frames.KIND_BINARY, payload);
+                }
+            }
+        });
     }
 
     /**

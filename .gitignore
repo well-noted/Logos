@@ -1,5 +1,6 @@
 # Rust
 /target/
+/spikes/*/target/
 **/*.rs.bk
 
 # Bridge (Gradle)

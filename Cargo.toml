@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Spikes are separate Cargo projects so their dependencies don't slow down the main build.
+exclude = ["spikes"]
 
 [workspace.package]
 edition = "2024"

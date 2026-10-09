@@ -175,3 +175,90 @@ fn same_seed_same_run_across_processes() {
     assert_eq!(first, second);
     eprintln!("AA4 seed 3 after 60 steps: {:?}", first.values);
 }
+
+/// workspace.run from Rust: AA4 runs until it stops itself, with view frames streamed.
+#[test]
+#[ignore = "needs NetLogo 7.0.4 and the bridge jar"]
+fn run_streams_view_frames_until_the_model_stops() {
+    use logos_bridge_client::protocol::{DataFrame, RunEnd, RunStreams, StreamRate};
+    let bridge = spawn();
+    let ws = bridge.open(aa4()).unwrap().workspace;
+    bridge.command(ws, "set run-seed 1 setup").unwrap();
+    let streams = RunStreams {
+        view: Some(StreamRate {
+            every_ticks: 1,
+            max_fps: 1000.0,
+        }),
+        observe: None,
+    };
+    let run = bridge.run(ws, "go", None, &streams).unwrap();
+    let done = bridge
+        .wait_run_finished(ws, run, Duration::from_secs(120))
+        .unwrap();
+    assert_eq!(done.reason, RunEnd::Stopped);
+    let mut frames = Vec::new();
+    while let Some(DataFrame::View(v)) = bridge.next_data_frame(Duration::from_secs(1)) {
+        frames.push(v);
+    }
+    assert!(frames.len() >= 2);
+    for (i, f) in frames.iter().enumerate() {
+        assert_eq!(f.sequence, i as u64);
+        assert_eq!((f.width, f.height), (320, 480));
+    }
+    assert_eq!(frames.last().unwrap().ticks, done.ticks);
+    eprintln!(
+        "run: {} iterations in {:.0} ms, {} frames",
+        done.iterations,
+        done.elapsed_millis,
+        frames.len()
+    );
+    bridge.shutdown().unwrap();
+}
+
+/// Part of A4: AA4 run speed with and without view frames, printed for docs/phase-0-results.md.
+#[test]
+#[ignore = "needs NetLogo 7.0.4 and the bridge jar"]
+fn a4_run_speed_with_and_without_frames() {
+    use logos_bridge_client::protocol::{RunStreams, StreamRate};
+    let bridge = spawn();
+    let measure = |streams: &RunStreams| {
+        let ws = bridge.open(aa4()).unwrap().workspace;
+        bridge.command(ws, "set run-seed 1 setup").unwrap();
+        let run = bridge.run(ws, "go", None, streams).unwrap();
+        let done = bridge
+            .wait_run_finished(ws, run, Duration::from_secs(300))
+            .unwrap();
+        let mut frames = 0;
+        while bridge.try_data_frame().is_some() {
+            frames += 1;
+        }
+        bridge.dispose(ws).unwrap();
+        (done.iterations, done.elapsed_millis, frames)
+    };
+    let (it0, ms0, _) = measure(&RunStreams::default());
+    let (it1, ms1, f1) = measure(&RunStreams {
+        view: Some(StreamRate {
+            every_ticks: 1,
+            max_fps: 30.0,
+        }),
+        observe: None,
+    });
+    let (it2, ms2, f2) = measure(&RunStreams {
+        view: Some(StreamRate {
+            every_ticks: 1,
+            max_fps: 1000.0,
+        }),
+        observe: None,
+    });
+    assert_eq!(it0, it1);
+    assert_eq!(it0, it2);
+    eprintln!(
+        "A4: no frames {it0} iterations in {ms0:.0} ms ({:.1}/s); \
+         30 fps cap {ms1:.0} ms, {f1} frames ({:.1} fps); \
+         every iteration {ms2:.0} ms, {f2} frames ({:.1} fps)",
+        it0 as f64 * 1000.0 / ms0,
+        f1 as f64 * 1000.0 / ms1,
+        f2 as f64 * 1000.0 / ms2
+    );
+    bridge.shutdown().unwrap();
+}

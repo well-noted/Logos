@@ -176,15 +176,17 @@ params: { "workspace": WorkspaceId,
 result: { "run": int }
 ```
 
-- `view`: send a `view-frame` (section 6.1) after an iteration when at least `everyTicks` ticks have passed since the last frame and at least `1/maxFps` seconds have passed. Frames are rendered on the job thread between iterations.
-- `agents`: send an `agent-state` frame (section 6.2) under the same rule.
+- `view`: send a view frame (section 6.1) after an iteration when at least `everyTicks` ticks have passed since the last frame and at least `1/maxFps` seconds have passed. Frames are rendered on the job thread between iterations. The first frame (sequence 0) shows the state before the first iteration, and a final frame is always sent when the run ends, so the client sees the end state. `everyTicks` defaults to 1 and `maxFps` to 30.
+- `agents`: send an agent-state frame (section 6.2) under the same rule. Not implemented yet; the bridge rejects it with `-32602`.
 - `observe`: send a `run.observed` notification every `everyTicks` ticks, with values computed as in `workspace.observe`.
 
 For models that don't use ticks, "ticks passed" counts iterations instead.
 
+The command is compiled as `source` followed by NetLogo's `__experimentstepend`, the same way BehaviorSpace compiles its go commands (`lab/Worker.scala` at `v7.0.4`). That is how a `stop` at the top level of the procedure is detected. Each iteration runs on the model's main random number generator, so a run gives the same results as the same commands sent through `workspace.command`. A compile error is returned as the response, and no run starts. The response `{ "run": int }` is sent once the command has compiled, before the first iteration.
+
 **`workspace.stop`**
 
-Asks the running command to halt at the next safe point (NetLogo's `halt`). The run then ends with a `run.finished` notification whose `reason` is `"halted"`.
+Asks the run to stop after the current iteration, as pressing a forever button a second time does in NetLogo. The current iteration is not interrupted. The run then ends with a `run.finished` notification whose `reason` is `"halted"`. Calling it when nothing is running does nothing. `workspace.dispose` during a run stops it the same way before disposing.
 
 ```
 params: { "workspace": WorkspaceId }
@@ -226,9 +228,9 @@ Fails with `1007 FileExists` if `outputPath` exists.
 |---|---|
 | `workspace.output` | `{ "workspace": WorkspaceId, "text": string }` — text printed by the model |
 | `run.observed` | `{ "workspace": WorkspaceId, "run": int, "ticks": number \| null, "values": [ {"ok": Value} \| {"error": ErrorData} ] }` |
-| `run.finished` | `{ "workspace": WorkspaceId, "run": int, "reason": "stopped" \| "completed" \| "halted" \| "error", "iterations": int, "ticks": number \| null, "error": ErrorData \| null }` |
+| `run.finished` | `{ "workspace": WorkspaceId, "run": int, "reason": "stopped" \| "completed" \| "halted" \| "error", "iterations": int, "ticks": number \| null, "elapsedMillis": number, "error": ErrorData \| null }` |
 
-`reason` values: `"stopped"` = the command executed `stop`; `"completed"` = `repeat` iterations finished; `"halted"` = `workspace.stop` or `halt`; `"error"` = runtime error.
+`reason` values: `"stopped"` = the command executed `stop`; `"completed"` = `repeat` iterations finished; `"halted"` = `workspace.stop`, `workspace.dispose` or bridge shutdown; `"error"` = runtime error. `iterations` counts completed iterations; an iteration that fails with a runtime error is not counted.
 
 ## 6. Binary data frames
 
@@ -321,7 +323,7 @@ A `RuntimeError` or `CompilerError` never ends the bridge process. The workspace
 
 ## 9. Open points for Phase 0
 
-- Confirm that `HeadlessWorkspace.exportView` can be called on the job thread between `go` calls without side effects on the model.
-- Confirm how BehaviorSpace detects a top-level `stop` in the go procedure (`lab/Worker.scala` at `v7.0.4`) and reuse the same mechanism for `run.finished` with reason `"stopped"`.
+- Settled: `HeadlessWorkspace.exportView` is called on the job thread between iterations. `RunTest.runMatchesTheSameStepsAsCommands` checks that a run with frames gives the same model state as the same steps without them.
+- Settled: top-level `stop` is detected with `__experimentstepend`, as in BehaviorSpace.
 - Confirm which random generator plot update code uses in a headless run (A12).
 - Decide whether `workspace.output` should be buffered per iteration to avoid one notification per `print`.
