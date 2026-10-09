@@ -117,3 +117,11 @@ This follows from D-08 (analysis lives in Python). Points to settle before build
 NetLogo 7.0.4's `netlogo-headless.bat` fails when NetLogo is installed in a folder with a space in its name, such as `C:\Program Files\NetLogo 7.0.4` (Java reports `Could not find or load main class Files\NetLogo`). The script sets `BASE_DIR` with a trailing backslash and passes `-Dnetlogo.docs.dir="%BASE_DIR%"`; the argument then ends in `\"`, which the Windows command-line parser reads as an escaped quote, so the string never closes and the following arguments run together.
 
 Logos never builds a launch command by joining strings or by calling NetLogo's launch scripts. It starts Java directly and passes each argument as a separate list element (`std::process::Command::arg`), as `logos-bridge-client` already does. The fix for NetLogo's script (drop the trailing backslash in that one place) is a candidate upstream PR.
+
+## D-18 Converting a legacy model does not re-lay out its widgets — proposed
+
+When NetLogo 7.0.4's GUI opens a model saved before NetLogo 6.4.0, it asks whether to resize the interface widgets for NetLogo 7's larger widgets ("Resize and adjust positions" or "Skip", `app/FileManager.scala`). "Resize and adjust positions" runs `WidgetPanel.convertWidgetSizes`, which takes each widget's minimum size from its Swing component on screen and then moves widgets apart to keep their gaps. The same tool is in the Tools menu (Convert Widgets to New Sizes), so it can also run after the model is open.
+
+`model.convertLegacy` matches the GUI with "Skip": the widgets keep their old geometry and are written with `sizeVersion="0"`, which NetLogo 7 reads as old-size widgets. The bridge cannot reproduce "Resize and adjust positions" exactly without drawing the widgets in Swing.
+
+Proposal: the conversion stays as it is. Re-laying out old-size widgets becomes a separate, optional command in Logos's interface editor (Phase 2), where Logos knows its own widget sizes. Until then a user who wants NetLogo's re-layout can open the converted model in NetLogo and run Tools > Convert Widgets to New Sizes.

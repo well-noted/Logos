@@ -10,6 +10,10 @@
 # Corpus downloads
 /corpus/.cache/
 
+# A9 conversion inputs and NetLogo GUI conversions, kept local until their licenses are
+# recorded (see corpus/README.md)
+/corpus/legacy/
+
 # Spike results that are regenerated
 /spikes/**/out/
 
