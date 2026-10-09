@@ -1,0 +1,3211 @@
+<?xml version="1.0" encoding="utf-8"?>
+<model version="NetLogo 7.0.4" snapToGrid="true">
+  <code><![CDATA[; Artificial Anasazi: baseline + dynamic soil + scarcity-driven crowding, each switchable
+; The NetLogo Models Library model (Stonedahl & Wilensky 2010) plus small fixes that make it
+; work as intended. Markers used in comments:
+;   [BASELINE FIX]  corrects behavior of the published model
+;   [BASELINE]      seed control, measurement and reporting added to the published model
+;   [SOIL]          dynamic soil quality (soil-on?)
+;   [CROWDING]      scarcity-driven plot sharing (crowding-on?)
+
+breed [ historical-settlements historical-settlement ] ; historical occupation
+breed [ households household ]
+breed [ water-points water-point ]
+
+patches-own [
+  water-source
+  zone
+  zone-pcolor
+  apdsi
+  hydro
+  quality
+  maize-zone
+  yield
+  base-yield
+  num-occupying-farms      ; [CROWDING] now a COUNT (0..crowding-limit), not a 0/1 flag
+  num-occupying-households
+  base-quality           ; [SOIL] the original setup draw; the target of recovery
+  cumulative-farm-years  ; [SOIL] diagnostic only
+]
+
+historical-settlements-own [
+  sarg                 ; an ID number relating to data collected by the
+                       ;   "Southwestern Anthropological Research Group"
+                       ;   (unused by the simulation, left for reference)
+  meter-north          ; real world location measurements
+  meter-east           ; real world location measurements
+  start-date           ; historical start date
+  end-date             ; historical end date
+  median-date          ; historical median date
+  settlement-type      ; extra historical data from the file (unused)
+  settlement-size      ; extra historical data from the file (unused)
+  description          ; extra historical data from the file (unused)
+  room-count           ; extra historical data from the file (unused)
+  elevation            ; extra historical data from the file (unused)
+  baseline-households  ; baseline number of households
+  number-of-households ; "current" number of households
+]
+
+households-own [
+  farm-x
+  farm-y
+  farm-plot
+  last-harvest
+  estimate
+  age
+  fertility-age
+  aged-corn-stocks
+  nutrition-need
+  nutrition-need-remaining
+  holds-plot?          ; [CROWDING] true only while this household actually occupies a farm
+]
+
+water-points-own [
+  sarg
+  meter-north
+  meter-east
+  water-type
+  start-date
+  end-date
+]
+
+globals [
+  year
+  min-death-age
+  max-death-age
+  min-fertility-ends-age
+  max-fertility-ends-age
+  min-fertility
+  max-fertility
+  household-min-nutrition-need
+  household-max-nutrition-need
+  min-fertility-age
+  max-fertility-age
+  household-min-initial-age
+  household-max-initial-age
+  household-min-initial-corn
+  household-max-initial-corn
+  potential
+  potential-farms
+  best-farm streams-exist?
+  alluvium-exist?
+  farm-sites-available
+  total-households
+  historical-total-households
+  environment-data
+  apdsi-data
+  map-data
+  settlements-data
+  water-data
+  typical-household-size
+  base-nutrition-need
+  maize-gift-to-child
+  water-source-distance
+  years-of-stock
+  potential-lagged     ; [BASELINE FIX] the published one-tick-lagged capacity, kept for comparison
+  sites-at-tick-start  ; [BASELINE] reachable sites, sampled before relocation empties the pool
+  sim-series           ; [BASELINE] simulated households per year, for fit statistics
+  hist-series          ; [BASELINE] archaeological households, same years as sim-series [J09 section 3.1]
+  cap-series           ; [BASELINE] carrying capacity (Janssen's `potential`) per year [J09 section 3.3]
+  extinction-year      ; [BASELINE] first year the population hits zero; -1 if it never does
+  soil-series          ; [SOIL] mean farmed soil quality per year
+  capc-series          ; [CROWDING] crowding-adjusted capacity per year (households the land admits)
+  regen-g              ; [SOIL] regeneration coefficient (see regen-coefficient)
+]
+; Interface widgets added by the baseline (not declared here):
+;   run-seed          SLIDER 1..100   seeds the RNG right after clear-all
+;   uplands-fix?      SWITCH          ON = corrected zone name, OFF = published bug
+;   setup-yield-fix?  SWITCH          ON applies harvest-adjustment to the setup base-yield;
+;                                     OFF (default) keeps the published behavior
+; Interface widgets added by the soil model:
+;   depletion-rate      SLIDER  loss of relative soil quality per year of cultivation
+;   recovery-rate       SLIDER  maximum annual regrowth, as a fraction of base-quality
+;   degradation-factor  SLIDER  Janssen (2010) lambda: 0 = logistic, higher = erosion-like
+;   soil-heterogeneity  SLIDER  sd of the setup quality draw (published: harvest-variance)
+; depletion-rate = recovery-rate = 0 reproduces the baseline exactly.
+; Interface widgets that switch the mechanisms on and off:
+;   soil-on?      SWITCH  OFF = no soil dynamics and the published setup draw
+;   crowding-on?  SWITCH  OFF = one household per plot, as published
+; Both OFF reproduces the baseline; either one alone gives the soil-only or crowding-only model.
+; Interface widgets added by the crowding model:
+;   crowding-limit          SLIDER 1..4   max households per plot (1 = no crowding, the baseline)
+;   intensification-return  SLIDER 0..1   alpha: output of n households = base-yield * n ^ alpha
+
+; Default parameter values and where they come from in Janssen (2009, JASSS 12(4):13):
+;   death-age 38, fertility-ends-age 34, fertility 0.155, harvest-variance 0.4
+;       Table 4, column 1 (best fit of the replicated model). `fertility` is the
+;       Fission Probability p_f of Table 2.
+;   harvest-adjustment 0.54
+;       Lower end of the range explored in section 4.4 (0.54-0.70) and the L1
+;       carrying-capacity optimum in Table 4, column 2. The replicated-model
+;       optimum is 0.56 (section 4.11, Table 4 column 1).
+;   Published defaults (Table 2): harvest-adjustment 1.0, harvest-variance 0.1,
+;   death-age 30, fertility-ends-age 30, fission probability 0.125.
+;   Axtell et al. (2002) calibration as reported in section 3.4: harvest-variance 0.4,
+;   harvest-adjustment 0.6.
+
+to setup
+  clear-all
+  random-seed run-seed    ; [BASELINE] reproducible runs (clear-all does not touch the RNG)
+  set extinction-year -1  ; [BASELINE]
+  set-default-shape historical-settlements "house"
+  set-default-shape households "person"
+  load-map-data
+  set streams-exist? false
+  set alluvium-exist? false
+  set year 800
+
+  ; variable that count the number of sites available for farming
+  set farm-sites-available 0
+
+  ask patches [
+    set water-source 0
+    ; [SOIL] the setup draw becomes base-quality; its sd gets its own slider
+    ; (soil-heterogeneity = harvest-variance = 0.4 reproduces the baseline)
+    ; [SOIL] with soil-on? OFF the draw uses harvest-variance, as in the baseline
+    set base-quality ((random-normal 0 1) * (ifelse-value soil-on? [ soil-heterogeneity ] [ harvest-variance ])) + 1.0
+    if base-quality < 0 [ set base-quality 0 ]
+    set quality base-quality
+    set cumulative-farm-years 0
+  ]
+  set typical-household-size 5 ; a household consist of 5 persons
+  set base-nutrition-need 160   ; a person needs 160 kg of food (corn) each year
+
+  ; The original model allowed for many of these parameters to take on a range of
+  ; values, rather than just a single value. To simplify the model interface, and
+  ; keep the number of parameters modest, most of these "min- and max-"  variables
+  ; are set to matching values during SETUP. The min/max variables are left here in
+  ; the code, in case you want to explore more variation in these parameters.
+  set household-min-nutrition-need (base-nutrition-need * typical-household-size)
+  set household-max-nutrition-need (base-nutrition-need * typical-household-size)
+
+  ; when household agents can start to reproduce. (reproduction means here
+  ; that a daughter leaves the household to start a new household)
+  set min-fertility-age 16
+
+  set max-fertility-age 16
+  set min-death-age death-age ;maximum age of a household
+  set max-death-age death-age
+  set min-fertility-ends-age fertility-ends-age ; agent stop reproducing at this age
+  set max-fertility-ends-age fertility-ends-age
+  set min-fertility fertility ; probability that a fertile agent reproduces
+  set max-fertility fertility
+  set maize-gift-to-child 0.33 ; a new household gets part of the storage of the parent household
+  set water-source-distance 16.0 ; agents like to live within a certain distance of the water
+  set years-of-stock 2 ; number of years corn that can be stored.
+  set household-min-initial-age 0 ; to determine ages of initial households
+  set household-max-initial-age 29
+  set household-min-initial-corn 2000 ; to determine storage of initial households
+  set household-max-initial-corn 2400
+
+  ask historical-settlements [ hide-turtle ] ; don't show historical sites
+  water ; calculate water availability for initial timestep
+  calculate-yield ; calculate yeild
+  ; [BASELINE FIX] the published model omits harvest-adjustment here, so at SETUP a
+  ; patch's base-yield is overstated by 1 / harvest-adjustment (~1.85x at 0.54).
+  ; The first GO recomputes base-yield correctly; only initial placement is affected.
+  ; [J09 section 2.11] defines base yield as BY = y * q * Ha (yield, soil quality,
+  ; harvest adjustment), so the published setup line without Ha departs from the
+  ; paper's own definition.
+  ifelse setup-yield-fix?
+    [ ask patches [ set base-yield yield * quality * harvest-adjustment ] ]
+    [ ask patches [ set base-yield yield * quality ] ]
+
+  determine-potential-farms ; determine how many farms could be on the land
+  ; initialization of 14 households (based on the initial data) and put them randomly on the landscape
+  create-households 14 [
+    set farm-x random 80
+    set farm-y random 120
+    init-household
+  ]
+  ; [BASELINE FIX] the published setup never assigns total-households, so the first
+  ; plotted / recorded value is 0 (in Janssen's lhv.nlogo, which does not call
+  ; clear-all, it is the previous run's final value).
+  set total-households count households
+  set potential count patches with [ yield * quality * harvest-adjustment >= household-min-nutrition-need ]
+  set potential-lagged potential
+  set sites-at-tick-start farm-sites-available
+  estimate-harvest
+  show-settlements-on-map
+  set historical-total-households 0
+  if historic-view? [ show-historical-population ]
+  set sim-series []
+  set hist-series []
+  set cap-series []
+  set soil-series []
+  set capc-series []
+  reset-ticks
+end
+
+to go
+  if year > 1350 [ stop ]
+  set historical-total-households 0
+  set total-households 0
+  calculate-yield
+
+  ; potential amount of households based on level of base-yield (dependent on PSDI and water availability)
+  ; [BASELINE FIX] the published line reads base-yield BEFORE this year's harvest recomputes
+  ; it, so it lags one tick. Kept as potential-lagged; `potential` is re-measured below.
+  set potential-lagged count patches with [ base-yield >= household-min-nutrition-need ]
+
+  if historic-view? [ show-historical-population ]
+  calculate-harvest-consumption
+  update-soil   ; [SOIL]
+  ; [BASELINE] capacity measures, read from this year's base-yield. Wrapped so the
+  ; agentset shuffle inside determine-potential-farms does not perturb the run.
+  ; [J09 section 3.3] carrying capacity is the number of cells whose base yield is at
+  ; least the household nutritional need (800 kg, Table 2). `potential` follows that
+  ; definition.
+  with-local-randomness [
+    determine-potential-farms
+    set sites-at-tick-start farm-sites-available
+    set potential count patches with [ base-yield >= household-min-nutrition-need ]
+  ]
+  check-death
+  estimate-harvest
+  ask households [
+    ; agents who expect not to have sufficient food next timestep move to a new spot
+    ; (if available). If no spots are available, they leave the system.
+    if estimate < nutrition-need [
+      ; we have to check everytime whether locations are available for moving agents.
+      ; Could be implemented more efficiently by only updating selected info
+      determine-potential-farms
+      release-plot            ; [CROWDING] was `ask patch farm-x farm-y [ set num-occupying-farms 0 ]`
+      find-farm-and-settlement
+    ]
+  ]
+  determine-potential-farms
+  ask households [
+    if (age > fertility-age) and
+      (age <= fertility-ends-age) and
+      (random-float 1.0 < fertility) [
+      if length potential-farms > 0 [
+        determine-potential-farms
+        fissioning
+      ]
+    ]
+  ]
+  set total-households count households
+  if extinction-year = -1 and total-households = 0 [ set extinction-year year ]  ; [BASELINE]
+  water
+  show-settlements-on-map
+  set year year + 1
+  with-local-randomness [   ; [BASELINE] per-year accumulators
+    set sim-series lput total-households sim-series
+    set hist-series lput historical-total-households hist-series
+    set cap-series lput potential cap-series
+    set soil-series lput mean-farmed-quality soil-series   ; [SOIL]
+    set capc-series lput potential-crowded capc-series     ; [CROWDING]
+  ]
+  tick
+end
+
+to init-household
+  ; Initialization of households which derive initial storage, age, amount of
+  ; nutrients needed, etc. This procedure also finds a spot for the farming
+  ; plots and settlements on the initial landscape
+  set best-farm self
+  set aged-corn-stocks []
+  set aged-corn-stocks fput (household-min-initial-corn + random-float (household-max-initial-corn - household-min-initial-corn)) aged-corn-stocks
+  set aged-corn-stocks fput (household-min-initial-corn + random-float (household-max-initial-corn - household-min-initial-corn)) aged-corn-stocks
+  set aged-corn-stocks fput (household-min-initial-corn + random-float (household-max-initial-corn - household-min-initial-corn)) aged-corn-stocks
+  set farm-plot self
+  set age household-min-initial-age + random (household-max-initial-age - household-min-initial-age)
+  set nutrition-need household-min-nutrition-need + random (household-max-nutrition-need - household-min-nutrition-need)
+  set fertility-age min-fertility-age + random (max-fertility-age - min-fertility-age)
+  set death-age min-death-age + random (max-death-age - min-death-age)
+  set fertility-ends-age min-fertility-ends-age + random (max-fertility-ends-age - min-fertility-ends-age)
+  set fertility min-fertility + random-float (max-fertility - min-fertility)
+  set last-harvest 0
+  set holds-plot? false   ; [CROWDING] hatched households inherit the parent's true value
+  find-farm-and-settlement
+end
+
+to find-farm-and-settlement
+  ; find a new spot for the settlement (might remain the same location as before)
+  let still-hunting? true
+  let x 0
+  let y 0
+  ifelse length potential-farms = 0 [ ; If there were no potential farms, the agent is removed from the system.
+    ask patch-here [ set num-occupying-households num-occupying-households - 1 ]
+    release-plot            ; [CROWDING]
+    die
+  ]
+  [ ; otherwise (there are potential farm spots), we proceed to find a suitable one
+    set best-farm determine-best-farm
+    let best-yield [ yield ] of best-farm
+    claim-plot best-farm    ; [CROWDING] was four lines plus `set num-occupying-farms 1`
+    ; NOTE: settlement placement still requires num-occupying-farms = 0, i.e. a
+    ; settlement may not sit on farmed land. Unchanged from the published model.
+    if count patches with [ water-source = 1 and num-occupying-farms = 0 and yield < best-yield ] > 0 [
+      ;if there are cells with water which are not farmed and in a zone that is less productive than the zone where the favorite farm plot is located
+      ask min-one-of patches with [ water-source = 1 and num-occupying-farms = 0 and yield < best-yield ] [ distance best-farm ] [ ; find the most nearby spot
+        if distance best-farm <= water-source-distance [set x pxcor set y pycor set still-hunting? false]
+      ]
+      if not still-hunting? [
+        ask min-one-of patches with [ num-occupying-farms = 0 and hydro <= 0 ] [ distancexy x y ] [ ; if the favorite location is nearby move to that spot
+          set x pxcor
+          set y pycor
+          set num-occupying-households num-occupying-households + 1
+        ]
+      ]
+    ]
+    if still-hunting? [ ; if no settlement is found yet
+      ; find a location that is not farmed with nearby water (but this might be in the same zone as the farm plot)
+      ask min-one-of patches with [ num-occupying-farms = 0 ] [ distance best-farm ] [
+        if distance best-farm <= water-source-distance [
+          set x pxcor
+          set y pycor
+          set still-hunting? false
+        ]
+      ]
+      if not still-hunting?  [
+        ask min-one-of patches with [ num-occupying-farms = 0 and hydro <= 0 ] [ distancexy x y ] [
+          set x pxcor
+          set y pycor
+          set num-occupying-households num-occupying-households + 1
+        ]
+      ]
+    ]
+    if still-hunting? [ ; if still no settlement is found try to find a location that is not farmed even if this is not close to water
+      ask min-one-of patches with [ num-occupying-farms = 0 ] [ distance best-farm ] [
+        set x pxcor
+        set y pycor
+        set still-hunting? false
+      ]
+      if not still-hunting? [
+        ask min-one-of patches with [ num-occupying-farms = 0 and hydro <= 0 ] [ distancexy x y ] [
+          set x pxcor
+          set y pycor
+          set num-occupying-households num-occupying-households + 1
+        ]
+      ]
+    ]
+    if still-hunting? [ ;if no possible settlement is found, leave the system
+      release-plot        ; [CROWDING]
+      die ; note: once the running agent dies, it stops executing code
+    ]
+    set xcor x
+    set ycor y
+    ask patch-here [
+      set num-occupying-households num-occupying-households + 1
+    ]
+  ]
+end
+
+to determine-potential-farms
+  ;; Determine the list of potential locations for a farm to move to.
+  ;; A potential location to farm is a place where nobody is farming
+  ;;   and where the base-yield is higher than the minimum amount of food needed
+  ;;   and where nobody has build a settlement
+  set potential-farms []
+  ask patches with [(zone != "Empty") and (num-occupying-farms = 0) and (num-occupying-households = 0) and (base-yield >= household-min-nutrition-need) ] [
+    set potential-farms lput self potential-farms
+  ]
+
+  ; [CROWDING] crowding is scarcity-driven. Households join an occupied plot ONLY when
+  ; no empty plot is available anywhere, so tolerance rises endogenously as land
+  ; runs out. Guarded by crowding-limit > 1, so at crowding-limit = 1 this block
+  ; never executes and one-household-per-plot behavior - including the RNG sequence - is unchanged.
+  if crowd-cap > 1 and empty? potential-farms [
+    ask patches with [ (zone != "Empty") and (num-occupying-households = 0)
+                       and (num-occupying-farms > 0)
+                       and (num-occupying-farms < crowd-cap)
+                       and (base-yield >= household-min-nutrition-need
+                            * ((num-occupying-farms + 1) ^ (1 - intensification-return))) ] [
+      set potential-farms lput self potential-farms
+    ]
+  ]
+  set farm-sites-available length potential-farms
+end
+
+to-report determine-best-farm
+  ; the agent likes to go to the potential farm which is closest nearby existing farm
+  let existing-farm patch farm-x farm-y
+  let distance-to-best 1000
+  foreach potential-farms [ farm ->
+    ask farm [
+      if distance existing-farm < distance-to-best [
+        set best-farm self
+        set distance-to-best distance existing-farm
+      ]
+    ]
+  ]
+  if length potential-farms > 0 [
+    set potential-farms remove best-farm potential-farms
+  ]
+  report best-farm
+end
+
+to fissioning
+  ; creates a new agent and update relevant info from new and parent agent. Agent will farm at a nearby available location
+  let ys years-of-stock
+  while [ ys > -1 ] [
+    set aged-corn-stocks replace-item ys aged-corn-stocks ((1 - maize-gift-to-child) * (item ys aged-corn-stocks))
+    set ys ys - 1
+  ]
+  hatch 1 [
+    init-household
+    set age 0 ;override the value derived in init-household since this will be a fresh household
+    set ys years-of-stock
+    while [ ys > -1 ] [
+      set aged-corn-stocks replace-item ys aged-corn-stocks ((maize-gift-to-child / (1 - maize-gift-to-child)) * (item ys aged-corn-stocks))
+      set ys ys - 1
+    ]
+  ]
+end
+
+to load-map-data
+  ifelse ( file-exists? "data/map.txt" ) [
+    set map-data []
+    file-open "data/map.txt"
+    while [ not file-at-end? ] [
+      set map-data sentence map-data (list (list file-read))
+    ]
+    file-close
+  ]
+  [ user-message "There is no map.txt file in the data directory!" ]
+
+  ;; the map data file is stored in specific order, so we have to assign it to patches in that order,
+  ;; which is accomplished by manipulating the yy and xx variables each time through the loop.
+  let yy 119
+  let xx 0
+  foreach map-data [ map-values ->
+    let map-value first map-values
+    if map-value = 0  [ ask patch xx yy [ set zone-pcolor black set zone "General"     set maize-zone "Yield_2"   ] ] ; General Valley
+    if map-value = 10 [ ask patch xx yy [ set zone-pcolor red   set zone "North"       set maize-zone "Yield_1"   ] ] ; North Valley
+    if map-value = 15 [ ask patch xx yy [ set zone-pcolor white set zone "North Dunes" set maize-zone "Sand_dune" ] ] ; North Valley ; Dunes
+    if map-value = 20 [ ask patch xx yy [ set zone-pcolor gray  set zone "Mid"
+      ifelse xx <= 74
+        [ ask patch xx yy [ set maize-zone "Yield_1" ] ]
+        [ ask patch xx yy [ set maize-zone "Yield_2" ] ]
+      ]
+    ] ; Mid Valley
+    if map-value = 25 [ ask patch xx yy [ set zone-pcolor white  set zone "Mid Dunes" set maize-zone "Sand_dune" ] ] ; Mid Valley ; Dunes
+    if map-value = 30 [ ask patch xx yy [ set zone-pcolor yellow set zone "Natural"   set maize-zone "No_Yield"  ] ] ; Natural
+    if map-value = 40 [ ask patch xx yy [ set zone-pcolor blue   set zone "Uplands"   set maize-zone "Yield_3"   ] ] ; Uplands Arable
+    if map-value = 50 [ ask patch xx yy [ set zone-pcolor pink   set zone "Kinbiko"   set maize-zone "Yield_1"   ] ] ; Kinbiko Canyon
+    if map-value = 60 [ ask patch xx yy [ set zone-pcolor white  set zone "Empty"     set maize-zone "Empty"     ] ] ; Empty
+    ifelse yy > 0
+      [ set yy yy - 1 ]
+      [ set xx xx + 1 set yy 119 ]
+  ]
+  ask patches [ set pcolor zone-pcolor ]
+
+  ; The order of the data from the file is:
+  ;  SARG number, meters north, meters east, start date, end date, median date (1950 - x), type, size, description, room count, elevation, baseline households
+  ifelse file-exists? "data/settlements.txt" [
+    set settlements-data []
+    file-open "data/settlements.txt"
+    while [ not file-at-end? ] [
+      set settlements-data sentence settlements-data (list (n-values 12 [ file-read ]))
+    ]
+    file-close
+  ]
+  [ user-message "There is no settlements.txt file in the data directory!" ]
+
+  foreach settlements-data [ settlement-data ->
+    create-historical-settlements 1 [
+      set sarg item 0 settlement-data
+      set meter-north item 1 settlement-data
+      set meter-east item 2 settlement-data
+      set start-date item 3 settlement-data
+      set end-date item 4 settlement-data
+      set median-date (1950 - item 5 settlement-data)
+      set settlement-type item 6 settlement-data
+      set settlement-size item 7 settlement-data
+      set description item 8 settlement-data
+      set room-count item 9 settlement-data
+      set elevation item 10 settlement-data
+      set baseline-households item 11 settlement-data
+    ]
+  ]
+
+  ; number, meters north, meters east, type, start date, end date
+  ifelse file-exists? "data/water.txt" [
+    set water-data []
+    file-open "data/water.txt"
+    while [ not file-at-end? ] [
+      set water-data sentence water-data (list (n-values 6 [file-read]))
+    ]
+    file-close
+  ]
+  [ user-message "There is no water.txt file in the data directory!" ]
+
+  foreach water-data [ data ->
+    create-water-points 1 [
+      set sarg item 0 data
+      set meter-north item 1 data
+      set meter-east item 2 data
+      set water-type item 3 data
+      set start-date item 4 data
+      set end-date item 5 data
+    ]
+  ]
+
+  ask water-points [
+    set xcor 24.5 + int ((meter-east - 2392) / 93.5)
+    set ycor 45 + int (37.6 + ((meter-north - 7954) / 93.5))
+    hide-turtle
+  ]
+
+  ; Import adjusted pdsi.
+  ifelse file-exists? "data/adjustedPDSI.txt" [
+    set apdsi-data []
+    file-open "data/adjustedPDSI.txt"
+    while [ not file-at-end? ] [
+      set apdsi-data sentence apdsi-data (list file-read)
+    ]
+    file-close
+  ]
+  [ user-message "There is no adjustedPDSI.txt file in the data directory!" ]
+
+ ; Import environment
+ ifelse file-exists? "data/environment.txt" [
+   set environment-data []
+   file-open "data/environment.txt"
+   while [ not file-at-end? ] [
+     set environment-data sentence environment-data (list (n-values 15 [ file-read ]))
+   ]
+   file-close
+ ]
+ [ user-message "There is no environment.txt file in the data directory!" ]
+
+ ask patches [
+   set num-occupying-farms 0
+   set num-occupying-households 0
+ ]
+end
+
+to water
+  ; define for each location when water is available
+  ifelse ((year >= 280 and year < 360) or (year >= 800 and year < 930) or (year >= 1300 and year < 1450))
+    [ set streams-exist? 1 ]
+    [ set streams-exist? 0 ]
+  ifelse (((year >= 420) and (year < 560)) or ((year >= 630) and (year < 680)) or ((year >= 980) and (year < 1120)) or ((year >= 1180) and (year < 1230)))
+    [ set alluvium-exist? 1 ]
+    [ set alluvium-exist? 0 ]
+
+  ask patches [
+    set water-source 0
+    if (alluvium-exist? = 1) and ((zone = "General") or (zone = "North") or (zone = "Mid") or (zone = "Kinbiko")) [
+      set water-source 1
+    ]
+    if (streams-exist? = 1) and (zone = "Kinbiko") [
+      set water-source 1
+    ]
+  ]
+
+  ask (patch-set (patch 72 114) (patch 70 113) (patch 69 112) (patch 68 111) (patch 67 110) (patch 66 109) (patch 65 108) (patch 65 107)) [
+    set water-source 1
+  ]
+
+  ask water-points [
+    if water-type = 2 [
+      ask patch xcor ycor [ set water-source 1 ]
+    ]
+    if water-type = 3 [
+      if year >= start-date and year <= end-date [
+        ask patch xcor ycor [ set water-source 1 ]
+      ]
+    ]
+  ]
+
+  if map-view = "water sources" [
+    ask patches [
+      ifelse water-source = 1
+        [ set pcolor blue ]
+        [ set pcolor white ]
+    ]
+  ]
+end
+
+to calculate-yield
+  ; calculate the yield and whether water is available for each patch based on the APDSI and water availability data.
+  let generalapdsi item (year - 200) apdsi-data
+  let northapdsi item (1100 + year) apdsi-data
+  let midapdsi item (2400 + year) apdsi-data
+  let naturalapdsi item (3700 + year) apdsi-data
+  let uplandapdsi item (3700 + year) apdsi-data
+  let kinbikoapdsi item (1100 + year) apdsi-data
+
+  let generalhydro item 1 (item (year - 382) environment-data)
+  let northhydro item 4 (item (year - 382) environment-data)
+  let midhydro item 7 (item (year - 382) environment-data)
+  let naturalhydro item 10 (item (year - 382) environment-data)
+  let uplandhydro item 10 (item (year - 382) environment-data)
+  let kinbikohydro item 13 (item (year - 382) environment-data)
+
+  ; [BASELINE FIX] the map loader names the arable-uplands zone "Uplands", but the
+  ; published calculate-yield tested zone = "Upland", so the 145 Uplands patches never
+  ; received a PDSI or hydro value (apdsi stayed 0 -> constant Yield_3 middle class, 547).
+  ; uplands-fix? OFF reproduces the published behavior exactly.
+  ; [J09 section 2.5 and Table 3] Arable Uplands is a distinct zone with its own
+  ; PDSI-indexed yield column (411 to 769 kg). With the name mismatch every Uplands
+  ; cell stayed in the middle PDSI class, 547 kg.
+  let uplands-name ifelse-value uplands-fix? [ "Uplands" ] [ "Upland" ]
+
+  ask patches [
+    if zone = "General" [ set apdsi generalapdsi ]
+    if zone = "North"   [ set apdsi northapdsi   ]
+    if zone = "Mid"     [ set apdsi midapdsi     ]
+    if zone = "Natural" [ set apdsi naturalapdsi ]
+    if zone = uplands-name [ set apdsi uplandapdsi  ]   ; [BASELINE FIX] published code tests "Upland", which matches 0 patches
+    if zone = "Kinbiko" [ set apdsi kinbikoapdsi ]
+
+    if zone = "General" [ set hydro generalhydro ]
+    if zone = "North"   [ set hydro northhydro   ]
+    if zone = "Mid"     [ set hydro midhydro     ]
+    if zone = "Natural" [ set hydro naturalhydro ]
+    if zone = uplands-name [ set hydro uplandhydro  ]   ; [BASELINE FIX] same zone-name mismatch
+    if zone = "Kinbiko" [ set hydro kinbikohydro ]
+
+    if maize-zone = "No_Yield" or maize-zone = "Empty" [ set yield 0 ]
+    if maize-zone = "Yield_1" [
+      if apdsi >=  3.0 [ set yield 1153 ]
+      if apdsi >=  1.0 and apdsi < 3.0 [ set yield 988 ]
+      if apdsi >  -1.0 and apdsi < 1.0 [ set yield 821 ]
+      if apdsi >  -3.0 and apdsi <= -1.0 [ set yield 719 ]
+      if apdsi <= -3.0 [ set yield 617 ]
+    ]
+
+    if maize-zone = "Yield_2" [
+      if apdsi >=  3.0 [ set yield 961 ]
+      if apdsi >=  1.0 and apdsi < 3.0 [ set yield 824 ]
+      if apdsi >  -1.0 and apdsi < 1.0 [ set yield 684 ]
+      if apdsi >  -3.0 and apdsi <= -1.0 [ set yield 599 ]
+      if apdsi <= -3.0 [ set yield 514 ]
+    ]
+
+    if maize-zone = "Yield_3" [
+      if apdsi >=  3.0 [ set yield 769 ]
+      if apdsi >=  1.0 and apdsi < 3.0 [ set yield 659 ]
+      if apdsi >  -1.0 and apdsi < 1.0 [ set yield 547 ]
+      if apdsi > -3.0 and apdsi <= -1.0 [ set yield 479 ]
+      if apdsi <= -3.0 [ set yield 411 ]
+    ]
+
+    if maize-zone = "Sand_dune" [
+      if apdsi >=  3.0 [ set yield 1201 ]
+      if apdsi >=  1.0 and apdsi < 3.0 [ set yield 1030 ]
+      if apdsi >  -1.0 and apdsi < 1.0 [ set yield 855 ]
+      if apdsi >  -3.0 and apdsi <= -1.0 [ set yield 749 ]
+      if apdsi <= -3.0 [ set yield 642 ]
+    ]
+
+    if map-view = "yield" [ set pcolor (40 + base-yield / 140) ]
+    if map-view = "zones" [ set pcolor zone-pcolor ]
+  ]
+end
+
+to estimate-harvest
+  ; calculate the expected level of food available for agent based on current stocks of corn and estimate of harvest of next year (equal to actual amount current year)
+  ask households [
+    let total 0
+    let ys years-of-stock - 1
+    while [ ys > -1 ] [
+      set total total + item ys aged-corn-stocks
+      set ys ys - 1
+    ]
+    set estimate total + last-harvest
+  ]
+end
+
+to calculate-harvest-consumption
+  ; calculate first for each cell the base yield, and then the actual harvest of households. Update the stocks of corn available in storage.
+  ask patches [ set base-yield (yield * quality * harvest-adjustment) ]
+  ask households [
+    ; [CROWDING] harvest is the household's SHARE of the plot, which equals
+    ; base-yield when it farms alone (n = 1 gives n ^ (alpha - 1) = 1).
+    set last-harvest (plot-share (patch farm-x farm-y)) * (1 + ((random-normal 0 1) * harvest-variance))
+    set aged-corn-stocks replace-item 2 aged-corn-stocks (item 1 aged-corn-stocks)
+    set aged-corn-stocks replace-item 1 aged-corn-stocks (item 0 aged-corn-stocks)
+    set aged-corn-stocks replace-item 0 aged-corn-stocks last-harvest
+    set nutrition-need-remaining nutrition-need
+    set age age + 1
+  ]
+
+  ; for each household calculate how much nutrients they can derive from harvest and stored corn
+  ask households [
+    let ys years-of-stock
+    while [ys > -1] [
+      ifelse (item ys aged-corn-stocks) >= nutrition-need-remaining [
+        set aged-corn-stocks replace-item ys aged-corn-stocks (item ys aged-corn-stocks - nutrition-need-remaining)
+        set nutrition-need-remaining 0
+      ]
+      [ set nutrition-need-remaining (nutrition-need-remaining - item ys aged-corn-stocks)
+        set aged-corn-stocks replace-item ys aged-corn-stocks 0
+      ]
+      set ys ys - 1
+    ]
+  ]
+end
+
+to check-death
+  ; agents who have not sufficient food derived or are older than death-age are removed from the system
+  ask households [
+    if nutrition-need-remaining > 0 or age > death-age [
+      release-plot        ; [CROWDING]
+      ask patch-here [ set num-occupying-households num-occupying-households - 1 ]
+      die
+    ]
+  ]
+end
+
+to show-historical-population
+  ; define the location and amount of households according to observations.
+  ask historical-settlements [
+    if settlement-type = 1 [
+      set number-of-households 0
+      ifelse year >= start-date and year < end-date [
+        show-turtle
+        if year > median-date [
+          if year != median-date [
+            set number-of-households ceiling (baseline-households * (end-date - year) / (end-date - median-date))
+            if number-of-households < 1 [
+              set number-of-households 1
+            ]
+          ]
+        ]
+        if year <= median-date [
+          if median-date != start-date [
+            set number-of-households ceiling (baseline-households * (year - start-date) / (median-date - start-date))
+            if number-of-households < 1 [
+              set number-of-households 1
+            ]
+          ]
+        ]
+      ]
+      [ hide-turtle ]
+      set historical-total-households historical-total-households + number-of-households
+      set xcor (24.5 + (meter-east - 2392) / 93.5) ; this is a translation from the input data in meters into location on the map.
+      set ycor 45 + (37.6 + (meter-north - 7954) / 93.5)
+      set size 2 * sqrt number-of-households ; using SQRT makes area of the turtle proportional to the number of households
+    ]
+  ]
+end
+
+to show-settlements-on-map
+  ; visualize the locations of farming and settlements
+  if map-view = "occupancy" [
+    ask patches [
+      ifelse num-occupying-households > 0 [
+        set pcolor red
+      ]
+      [ ifelse num-occupying-farms > 0      ; [CROWDING] was = 1
+          [ set pcolor yellow ]
+          [ set pcolor black ]
+      ]
+    ]
+  ]
+end
+
+
+
+; ============================================================
+; [SOIL] dynamic soil quality
+; ============================================================
+
+; Rescales the regeneration coefficient so that recovery-rate means "maximum
+; annual regrowth as a fraction of base-quality" at every degradation-factor.
+; Without this, raising degradation-factor also slows recovery overall,
+; confounding the shape of the regrowth curve with its speed.
+to-report regen-coefficient
+  let peak (1 + degradation-factor) / (2 + degradation-factor)
+  report recovery-rate / ((peak ^ (1 + degradation-factor)) * (1 - peak))
+end
+
+to update-soil
+  ; Called after the harvest is taken, so this year's cultivation depletes the
+  ; plot that produced this year's yield. Must run before CHECK-DEATH, which
+  ; clears num-occupying-farms for households that are about to be removed.
+  with-local-randomness [
+    ; Soil dynamics after Janssen (2010, Ecology and Society 15(2):19, eq. 4),
+    ; normalized so R = quality / base-quality runs 0..1 (C = 1).
+    ; degradation-factor is his lambda: 0 = logistic (soil always recovers),
+    ; higher = regrowth suppressed at low R, mimicking erosion.
+    ; [SOIL] soil-on? OFF leaves quality at its setup draw, as in the baseline. base-yield was
+    ; already set from quality in calculate-harvest-consumption.
+    if soil-on? [
+    set regen-g regen-coefficient
+    ask patches with [ zone != "Empty" ] [
+      ifelse base-quality <= 0
+        [ set quality 0 ]
+        [ let r quality / base-quality
+          set r r + regen-g * (r ^ (1 + degradation-factor)) * (1 - r)
+          ; [CROWDING] depletion scales with the number of households working the
+          ; plot, as in Janssen (2010). Identical to the soil-only model when n = 1.
+          if num-occupying-farms > 0 [
+            set r r - depletion-rate * num-occupying-farms
+            set cumulative-farm-years cumulative-farm-years + 1
+          ]
+          set quality base-quality * (max list 0 (min list 1 r))
+        ]
+      set base-yield yield * quality * harvest-adjustment
+    ]
+    ]
+    ; inside with-local-randomness: this ask consumes random numbers, so outside
+    ; it the run would depend on which map-view was selected
+    if map-view = "soil quality" [
+      ask patches [
+        ifelse zone = "Empty" or maize-zone = "No_Yield"
+          [ set pcolor white ]
+          [ set pcolor scale-color brown quality 1.5 0 ]
+      ]
+    ]
+  ]
+end
+
+; soil state on cells that were ever cultivated, normalized 0..1 (1 if none)
+to-report mean-farmed-quality
+  let fs patches with [ cumulative-farm-years > 0 and base-quality > 0 ]
+  ifelse any? fs
+    [ report mean [ quality / base-quality ] of fs ]
+    [ report 1 ]
+end
+
+; cells driven to absorbing zero. Once quality hits 0 the regrowth term
+; r ^ (1 + lambda) is also 0, so these can never recover at any lambda.
+to-report dead-cells
+  report count patches with [ quality = 0 and base-quality > 0 ]
+end
+
+to-report soil-at-year [ y ]
+  let i y - 801
+  if i < 0 or i >= length soil-series [ report 1 ]
+  report item i soil-series
+end
+
+to-report soil-1130 report soil-at-year 1130 end
+to-report soil-1260 report soil-at-year 1260 end
+
+; ============================================================
+; [CROWDING] plot tenure and crowding
+; The published model used num-occupying-farms as a 0/1 flag and cleared it with
+; `set num-occupying-farms 0`. With crowding it is a count, so occupancy is
+; released by decrement - and only by a household that actually holds a plot.
+; ============================================================
+
+; [CROWDING] effective crowding limit. crowding-on? OFF behaves as crowding-limit = 1.
+to-report crowd-cap
+  report ifelse-value crowding-on? [ crowding-limit ] [ 1 ]
+end
+
+to release-plot   ; household procedure
+  if holds-plot? [
+    ask patch farm-x farm-y [ set num-occupying-farms num-occupying-farms - 1 ]
+    set holds-plot? false
+  ]
+end
+
+to claim-plot [ p ]   ; household procedure
+  set farm-x [ pxcor ] of p
+  set farm-y [ pycor ] of p
+  set farm-plot p
+  ask p [ set num-occupying-farms num-occupying-farms + 1 ]
+  set holds-plot? true
+end
+
+; how many households a plot can feed. Output of a plot worked by n households
+; is base-yield * n ^ alpha, so each household's share is base-yield * n ^ (alpha - 1).
+; A plot admits n households only if that share still meets the nutrition need:
+;     base-yield >= need * n ^ (1 - alpha)
+; At crowding-limit = 1 this reduces to Janssen's condition exactly: a cell is a
+; candidate plot only if it yields at least the 800 kg need, and a plot belongs to one
+; household ([J09 section 2.14]).
+to-report plot-capacity   ; patch reporter
+  let n 0
+  let k 1
+  while [ k <= crowd-cap ] [
+    if base-yield >= household-min-nutrition-need * (k ^ (1 - intensification-return))
+      [ set n k ]
+    set k k + 1
+  ]
+  report n
+end
+
+; a household's share of its plot's output
+to-report plot-share [ p ]
+  let n max list 1 ([ num-occupying-farms ] of p)
+  report ([ base-yield ] of p) * (n ^ (intensification-return - 1))
+end
+
+; crowding-adjusted capacity: households the landscape admits. Equals `potential`
+; when crowding-limit = 1.
+to-report potential-crowded
+  report sum [ plot-capacity ] of patches with [ zone != "Empty" ]
+end
+
+; mean households per occupied plot. 1.0 means no crowding occurred.
+to-report mean-crowding
+  let occ patches with [ num-occupying-farms > 0 ]
+  ifelse any? occ
+    [ report mean [ num-occupying-farms ] of occ ]
+    [ report 0 ]
+end
+
+to-report max-crowding
+  report max [ num-occupying-farms ] of patches
+end
+
+to-report peak1-crowded report window-peak capc-series 1030 1130 end
+to-report peak2-crowded report window-peak capc-series 1180 1260 end
+to-report crowded-peak-ratio
+  ifelse peak1-crowded > 0 [ report peak2-crowded / peak1-crowded ] [ report 0 ]
+end
+
+; ============================================================
+; [BASELINE] instruments (observation only; none of these consume the main RNG)
+; Provenance key:  [J09 section N] = defined in Janssen (2009), Understanding Artificial
+;                   Anasazi, JASSS 12(4):13.   [local] = defined here, not in that paper.
+; ============================================================
+
+; [local] Pearson correlation between sim-series and hist-series (shape of the
+; trajectory). Not in Janssen (2009), which scores fit only with L1 and L2 (section 4.6).
+to-report fit-correlation
+  if length sim-series < 2 [ report 0 ]
+  let mx mean sim-series
+  let my mean hist-series
+  let sxy sum (map [ [a b] -> (a - mx) * (b - my) ] sim-series hist-series)
+  let sxx sum (map [ a -> (a - mx) ^ 2 ] sim-series)
+  let syy sum (map [ b -> (b - my) ^ 2 ] hist-series)
+  ifelse sxx = 0 or syy = 0
+    [ report 0 ]
+    [ report sxy / sqrt (sxx * syy) ]
+end
+
+; [J09 section 4.6] L2 population = sum of squared differences between historical and
+; simulated households; section 3.5 picks the best run by the smallest such sum.
+; [local] This reporter is the root of the mean square (RMS) of the same differences,
+; in households, so it ranks runs like L2 when run length is fixed. Unlike r, it
+; penalizes level error as well as shape.
+to-report fit-l2
+  if length sim-series < 1 [ report 0 ]
+  report sqrt mean (map [ [a b] -> (a - b) ^ 2 ] sim-series hist-series)
+end
+
+to-report extinct?
+  report count households = 0
+end
+
+; households whose farm plot is in the arable Uplands zone
+to-report uplands-farmers
+  report count households with [ [ zone ] of patch farm-x farm-y = "Uplands" ]
+end
+
+; ---- two-peak asymmetry ----
+; [J09 section 4.13] Carrying capacity is the same at both archaeological peaks, so a
+; model calibrated to carrying capacity overshoots the first peak (1030-1130) and
+; undershoots the second (1180-1260). The windows below are those two ranges.
+; [local] The window maximum and the second/first ratio are this model's numerical
+; formalization of that statement. The paper reports no ratio.
+; Index convention: the first go runs with year = 800, increments it to 801, then
+; appends. Series index i is therefore stamped year 801 + i, one year after the year
+; that go simulated. hist-series carries the same stamp.
+to-report window-peak [ series y0 y1 ]
+  if empty? series [ report 0 ]
+  let i0 max list 0 (y0 - 801)
+  let i1 min list (length series - 1) (y1 - 801)
+  if i1 < i0 [ report 0 ]
+  report max sublist series i0 (i1 + 1)
+end
+
+to-report peak1-capacity   report window-peak cap-series 1030 1130 end
+to-report peak2-capacity   report window-peak cap-series 1180 1260 end
+to-report peak1-population report window-peak sim-series 1030 1130 end
+to-report peak2-population report window-peak sim-series 1180 1260 end
+to-report peak1-historical report window-peak hist-series 1030 1130 end
+to-report peak2-historical report window-peak hist-series 1180 1260 end
+
+to-report capacity-peak-ratio
+  ifelse peak1-capacity > 0 [ report peak2-capacity / peak1-capacity ] [ report 0 ]
+end
+
+to-report population-peak-ratio
+  ifelse peak1-population > 0 [ report peak2-population / peak1-population ] [ report 0 ]
+end
+
+; Copyright 2010 Uri Wilensky.
+; Modifications copyright 2026 Thomas E. Tuoti (@well-noted), under the same license.
+; See Info tab for full copyright and license.]]></code>
+  <widgets>
+    <view x="480" wrappingAllowedX="true" y="10" frameRate="30.0" minPycor="0" height="484" showTickCounter="true" patchSize="4.0" fontSize="10" wrappingAllowedY="true" width="324" tickCounterLabel="year" maxPycor="119" updateMode="1" maxPxcor="79" minPxcor="0"></view>
+    <slider x="15" step="1" y="10" max="36" width="181" display="fertility-ends-age" height="50" min="26" direction="Horizontal" default="34.0" variable="fertility-ends-age"></slider>
+    <slider x="15" step="0.001" y="65" max="0.2" width="181" display="fertility" height="50" min="0" direction="Horizontal" default="0.155" variable="fertility"></slider>
+    <slider x="15" step="1" y="120" max="40" width="181" display="death-age" height="50" min="26" direction="Horizontal" default="38.0" variable="death-age"></slider>
+    <slider x="15" step="0.01" y="175" max="1" width="181" display="harvest-adjustment" height="50" min="0" direction="Horizontal" default="0.54" variable="harvest-adjustment"></slider>
+    <slider x="15" step="0.01" y="230" max="1" width="181" display="harvest-variance" height="50" min="0" direction="Horizontal" default="0.4" variable="harvest-variance"></slider>
+    <plot x="20" autoPlotX="true" yMax="10.0" autoPlotY="true" y="465" xMin="0.0" height="260" legend="true" xMax="10.0" yMin="0.0" width="455" display="Population">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="sim. households" color="-2674135" legend="true">
+        <setup></setup>
+        <update>plot total-households</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="historical data" color="-13345367" legend="true">
+        <setup></setup>
+        <update>plot historical-total-households</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="carrying-capacity" color="-7500403" legend="true">
+        <setup></setup>
+        <update>plot potential</update>
+      </pen>
+    </plot>
+    <slider x="15" step="0.0001" y="295" max="0.01" width="185" display="recovery-rate" height="50" min="0" direction="Horizontal" default="0.0" variable="recovery-rate" units="per year"></slider>
+    <slider x="15" step="0.0001" y="355" max="0.02" width="185" display="depletion-rate" height="50" min="0" direction="Horizontal" default="0.0" variable="depletion-rate" units="per year"></slider>
+    <slider x="15" step="0.01" y="410" max="1" width="185" display="soil-heterogeneity" height="50" min="0" direction="Horizontal" default="0.4" variable="soil-heterogeneity"></slider>
+    <button x="210" y="30" height="35" disableUntilTicks="false" forever="false" kind="Observer" width="90">setup</button>
+    <button x="210" y="70" height="35" disableUntilTicks="true" forever="true" kind="Observer" width="90">go</button>
+    <switch x="305" y="75" height="40" on="true" variable="historic-view?" width="147" display="historic-view?"></switch>
+    <switch x="305" y="30" height="40" on="false" variable="setup-yield-fix?" width="115" display="setup-yield-fix?"></switch>
+    <chooser x="310" y="120" height="60" variable="map-view" current="0" width="147" display="map-view">
+      <choice type="string" value="zones"></choice>
+      <choice type="string" value="water sources"></choice>
+      <choice type="string" value="yield"></choice>
+      <choice type="string" value="occupancy"></choice>
+      <choice type="string" value="soil quality"></choice>
+    </chooser>
+    <monitor x="205" precision="17" y="115" height="60" fontSize="11" width="100">potential</monitor>
+    <monitor x="210" precision="17" y="180" height="60" fontSize="11" width="100" display="sites available">farm-sites-available</monitor>
+    <plot x="215" autoPlotX="true" yMax="300.0" autoPlotY="false" y="265" xMin="0.0" height="175" legend="true" xMax="10.0" yMin="0.0" width="230" display="available sites vs carrying capacity">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="Available sites" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot farm-sites-available</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="Carrying capacity" color="-2674135" legend="true">
+        <setup></setup>
+        <update>plot potential</update>
+      </pen>
+    </plot>
+    <monitor x="320" precision="17" y="190" height="60" fontSize="11" width="100">fit-correlation</monitor>
+    <plot x="500" autoPlotX="true" yMax="1.5" autoPlotY="true" y="500" xMin="0.0" height="175" legend="false" xMax="10.0" yMin="0.0" width="230" display="resource pressure (households / capacity)">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update><![CDATA[ifelse potential > 20
+  [ plot total-households / potential ]
+  [ plot 0 ]]]></update>
+      </pen>
+    </plot>
+    <slider x="490" step=".1" y="680" max="2" width="250" display="degradation-factor" height="50" min="0" direction="Horizontal" default="1.0" variable="degradation-factor"></slider>
+    <slider x="740" step="1" y="505" max="100" width="50" display="run-seed" height="225" min="1" direction="Vertical" default="1.0" variable="run-seed"></slider>
+    <slider x="820" step="1" y="55" max="4" width="250" display="crowding-limit" height="50" min="1" direction="Horizontal" default="1.0" variable="crowding-limit"></slider>
+    <slider x="825" step="0.05" y="120" max="1" width="250" display="intensification-return" height="50" min="0" direction="Horizontal" default="0.5" variable="intensification-return"></slider>
+    <switch x="820" y="185" height="40" on="true" variable="uplands-fix?" width="147" display="uplands-fix?"></switch>
+    <switch x="820" y="250" height="40" on="true" variable="soil-on?" width="147" display="soil-on?"></switch>
+    <switch x="820" y="295" height="40" on="true" variable="crowding-on?" width="147" display="crowding-on?"></switch>
+  </widgets>
+  <info><![CDATA[## ARTIFICIAL ANASAZI: BASELINE + DYNAMIC SOIL + CROWDING
+
+## THE BASELINE
+
+All versions of this model are built from one baseline: the Artificial Anasazi model from the NetLogo Models Library (Stonedahl & Wilensky 2010), which adapts Janssen's (2009) NetLogo replication of the original Ascape model (Dean et al. 2000; Axtell et al. 2002), converted to NetLogo 7.0.4, plus a small set of fixes that make the model work as intended. The fixes change results very little. Their purpose is to give later modifications a starting point that does what the model's documentation says it does.
+
+* **Uplands zone name** (`uplands-fix?`, default ON). The map loader names the arable-uplands zone "Uplands", but `calculate-yield` tested for "Upland", so the arable-uplands patches never received a PDSI or hydro value. OFF reproduces the published behavior.
+* **Setup base yield** (`setup-yield-fix?`, default OFF). The published setup computes base yield without `harvest-adjustment`, so initial placement sees yields that are too high until the first tick recomputes them. ON applies the adjustment at setup. OFF keeps the published behavior.
+* **Initial household count.** `total-households` was never assigned in setup, so the first recorded value was 0.
+* **Carrying capacity reporting.** The published `potential` is read before the year's harvest is recomputed, so it lags one tick. The baseline re-measures it each tick and keeps the published value as `potential-lagged`.
+* **Seed control and instruments** (observation only). `run-seed` seeds the random number generator. Added reporters give per-year series of simulated households, archaeological households and carrying capacity, the year of extinction, correlation and RMS error against the archaeological series, and peak-window reporters for the two-peak comparison of Janssen (2009, section 4.13).
+
+Code comments mark these changes [BASELINE FIX] and [BASELINE].
+
+## WHAT THIS VERSION ADDS: DYNAMIC SOIL AND CROWDING, EACH SWITCHABLE
+
+This version contains both modifications below, each behind its own switch. `soil-on?` enables dynamic soil quality. `crowding-on?` enables scarcity-driven plot sharing. With both OFF the model reproduces the baseline. With only `soil-on?` ON it gives the soil-only model, and with only `crowding-on?` ON it gives the crowding-only model. The soil and crowding sliders have no effect while their switch is OFF. With both ON, depletion scales with the number of households working a plot. Code comments mark these changes [SOIL] and [CROWDING].
+
+### Dynamic soil
+
+Each cultivated plot loses `depletion-rate` of its relative quality per year, and every plot regrows toward its setup value following Janssen (2010, Ecology and Society 15(2):19, eq. 4). `degradation-factor` is his lambda: 0 gives logistic regrowth, and higher values suppress regrowth at low quality, which mimics erosion. `recovery-rate` sets the maximum annual regrowth as a fraction of the setup quality. `soil-heterogeneity` is the standard deviation of the setup quality draw (the baseline uses `harvest-variance`). A "soil quality" view is added to `map-view`.
+
+### Scarcity-driven crowding
+
+When no empty plot is available anywhere, a relocating or newly formed household may join an occupied plot, up to `crowding-limit` households, if its share of the plot's output still meets the nutrition need. A plot worked by n households produces base-yield * n^alpha, so each household's share is base-yield * n^(alpha - 1), where `intensification-return` is alpha. Carrying capacity is also reported in crowding-adjusted form (`potential-crowded`).
+
+## WHAT IS IT?
+
+This model simulates the population dynamics in the Long house Valley in Arizona between 800 and 1400. It is based on archaeological records of occupation in Long House Valley and shows that environmental variability alone can not explain the population collapse around 1350. The model is a replication of the work of Dean et al. (see references below).
+
+## HOW IT WORKS
+
+### Agents and the environment
+
+Each agent represents a household of five persons. Each household makes annual decisions on where to farm and where to settle. A household has an age, and a stock of food surplus
+previous years. Each cell represents a 100 meter by 100 meter space. Each cell is within one of the different zones of land: General Valley Floor, North Valley Floor, Midvalley Floor, Arable Uplands, Uplands Non-Arable, Kinbiko Canyon or Dunes. These zones have agricultural productivity that is determined by the Palmer Drought Severity Index (PDSI).
+
+### Initialization
+
+The initial number of households is 14. Each household is initialized by setting a household age from the uniform distribution [0, 29] and by setting the value of the corn stocks by the uniform distribution [2000, 2400].  The quality of the soil of the cells is initialized by adding a number drawn from the normal distribution with standard deviation specified by HARVEST-VARIANCE.
+
+
+### Process overview
+
+Every year the following sequence of calculations is performed:
+
+  1. calculate the harvest for each household
+  2. if agent derives not sufficient food from harvest and storage or the age is beyond maximum age of household the agent is removed from the system
+  3. calculate the estimated harvest for next year based on corn in stock and actual harvest from current year
+  4. agents who expect not to derive the required amount of food next year will move to a new farm location.
+  5. find a farm plot
+  6. find a plot to settle nearby
+  7. if a household is older than the minimum fission age, there is a probability pf, that a new household is generated. The new household will derive an endowment of a fraction of the corn stock.
+  8. update water sources based on input data
+  9. the household's age increases by one year
+
+### Design concepts
+  * _Adaptation_. Agents adjust the location of farming and housing if they expect that current location is not sufficient next year.
+  * _Prediction_. The prediction of harvest next year is the same as the experienced harvest from this year.
+  * _Fitness_. Fitness of agent is determined by the amount of harvest derived and amount of corn in storage. An agent is either considered to be "fit" or not fit. If not sufficient food is available, it is removed from the system.
+  * _Interaction_. Agents do not interact directly. Indirectly they interact by occupying potential farm plot. Agents represent households. In the model, reproduction is modeled at the household level.  Based on the age of the household and the availability of food, a household may give birth to an offspring household, which is representing a daughter who leaves the house and starts a new household (immediately with 3 children that require 160 kg corn per year).  These abstraction is simplistic, but still captures the essence of reproduction and population growth.
+  * _Stochasticity_.  Initial conditions of cells and agents, and the order in which agents are updated.
+
+## HOW TO USE IT?
+
+If you click on SETUP the model will load the data files and initialize the model. If you click on GO the simulation will start. You can adjust a number of sliders before you click on SETUP to initialize the model for different values.
+The slider HARVEST-ADJUSTMENT is the fraction of the harvest that is kept after harvesting the corn. The rest is assumed the be lost in the harvesting process. The default value is around 60%. If you increase this number much more agents than the historical record is able to live in the valley.
+The slider HARVEST-VARIANCE is used to create variation of quality of cells and temporal variability in harvest for each cell. If you have variance of the harvest some agents are lucky one year and need to use their storage another year. If there is no variance many agents will leave the valley at once when there is a bad year.
+The slider DEATH-AGE represents the maximum number of years an agent can exists. A lower number will reduce the population size.
+The slider FERTILITY-ENDS-AGE represents the maximum age of an agent to be able to produce offspring. A lower number will reduce the population size.
+The slider FERTILITY is the annual probability an agent gets offspring. A lower probability will reduce the population size.
+
+
+POPULATION GRAPH: the blue line shows the historical data, while the red line the simulated population size.
+
+**Maps**. With the MAP-VIEW chooser you can select different ways to view the landscape on the right.
+
+  * ZONES: this will show you the different land cover zones.
+    * Black: General Valley Floor
+    * Red: North Valley Floor
+    * White: Mid and North Dunes
+    * Gray: Midvalley Floor
+    * Yellow: Non-Arable Uplands
+    * Blue: Arable Uplands
+    * Pink: Kinbiko Canyon
+  * WATER SOURCES: this will show you the different surface water sources like springs. This is changing over time due to input data on retrodicted environmental history. Households will chose new locations based on being nearby water sources.
+  * YIELD: Each cell is colors on the amount of yield can be derived from the cell. The more yield the lighter the color.
+  * OCCUPANCY: yellow cells are use for agriculture, red cells for settlements
+
+If HISTORIC-VIEW? is on you will see the locations of settlements according to the data. The settlements are shown as houses, and the size (area of the house shape) is proportional the number of households on that location.
+
+## BSD LICENSE
+
+Copyright 1998-2007 The Brookings Institution, NuTech Solutions,Inc., Metascape LLC, and contributors.  All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+* Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+* Neither the names of The Brookings Institution, NuTech Solutions,Inc. or Metascape LLC nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+## MODIFICATIONS
+
+This model is a modified version of the NetLogo Models Library model Artificial Anasazi (Stonedahl & Wilensky 2010). The modifications, made by Thomas E. Tuoti (@well-noted) in 2026, are described in the sections above. The original authorship and copyright notices below are unchanged. The modifications are released under the same license as the original (Creative Commons Attribution-NonCommercial-ShareAlike 3.0).
+
+## CREDITS AND REFERENCES
+
+NetLogo replication of Artificial Anasazi model by Jeffrey S. Dean, George J. Gumerman, Joshua M. Epstein, Robert Axtell, Alan C. Swedlund, Miles Parker, and Steven McCarroll
+
+This model is a lightly adapted version of the prior replication work of Marco Janssen (with help of Sean Bergin and Allen Lee) who reimplemented the Artificial Anasazi model in NetLogo (the original model was written in Ascape).
+
+The code of this complex historical model is in the process of being refined by the NetLogo team, and still differs greatly from the usual standards of the Models Library.
+
+Janssen's version of the model is available at: https://www.comses.net/codebases/2222/releases/1.1.0/. (Furthermore, this "Info tab" is adapted from the ODD model documentation that accompanies that model.)
+
+Janssen's replication is discussed further in the following academic journal paper, which curious readers are highly encouraged to examine:
+
+Janssen, Marco A. (2009). Understanding Artificial Anasazi. Journal of Artificial Societies and Social Simulation 12(4)13 <http://jasss.soc.surrey.ac.uk/12/4/13.html>.
+
+Some follow-up work on calibration and sensitivity analysis of this model is published in:
+
+Stonedahl, F., & Wilensky, U. (2010). Evolutionary Robustness Checking in the Artificial Anasazi Model. Proceedings of the AAAI Fall Symposium on Complex Adaptive Systems: Resilience, Robustness, and Evolvability. November 11-13, 2010. Arlington, VA. (Available:  http://ccl.northwestern.edu/papers/2010/Stonedahl%20and%20Wilensky.pdf)
+
+## HOW TO CITE
+
+If you mention this model or the NetLogo software in a publication, we ask that you include the citations below.
+
+For the model itself:
+
+* Stonedahl, F. and Wilensky, U. (2010).  NetLogo Artificial Anasazi model.  http://ccl.northwestern.edu/netlogo/models/ArtificialAnasazi.  Center for Connected Learning and Computer-Based Modeling, Northwestern University, Evanston, IL.
+
+Please cite the NetLogo software as:
+
+* Wilensky, U. (1999). NetLogo. http://ccl.northwestern.edu/netlogo/. Center for Connected Learning and Computer-Based Modeling, Northwestern University, Evanston, IL.
+
+## COPYRIGHT AND LICENSE
+
+Copyright 2010 Uri Wilensky.
+
+Modifications copyright 2026 Thomas E. Tuoti (@well-noted), released under the same license.
+
+![CC BY-NC-SA 3.0](http://ccl.northwestern.edu/images/creativecommons/byncsa.png)
+
+This model is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 3.0 License.  To view a copy of this license, visit https://creativecommons.org/licenses/by-nc-sa/3.0/ or send a letter to Creative Commons, 559 Nathan Abbott Way, Stanford, California 94305, USA.
+
+NetLogo itself is free software for non-commercial use under the terms of the GNU General Public License ([see full license information here](https://ccl.northwestern.edu/netlogo/docs/copyright.html)).
+
+To inquire about commercial licenses for either NetLogo or specific models from the models library, please contact netlogo-commercial-admin@ccl.northwestern.edu.
+
+<!-- 2010 Cite: Stonedahl, F. -->]]></info>
+  <turtleShapes>
+    <shape name="default" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="5"></point>
+        <point x="40" y="250"></point>
+        <point x="150" y="205"></point>
+        <point x="260" y="250"></point>
+      </polygon>
+    </shape>
+    <shape name="airplane" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="135" y="15"></point>
+        <point x="120" y="60"></point>
+        <point x="120" y="105"></point>
+        <point x="15" y="165"></point>
+        <point x="15" y="195"></point>
+        <point x="120" y="180"></point>
+        <point x="135" y="240"></point>
+        <point x="105" y="270"></point>
+        <point x="120" y="285"></point>
+        <point x="150" y="270"></point>
+        <point x="180" y="285"></point>
+        <point x="210" y="270"></point>
+        <point x="165" y="240"></point>
+        <point x="180" y="180"></point>
+        <point x="285" y="195"></point>
+        <point x="285" y="165"></point>
+        <point x="180" y="105"></point>
+        <point x="180" y="60"></point>
+        <point x="165" y="15"></point>
+      </polygon>
+    </shape>
+    <shape name="arrow" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="0" y="150"></point>
+        <point x="105" y="150"></point>
+        <point x="105" y="293"></point>
+        <point x="195" y="293"></point>
+        <point x="195" y="150"></point>
+        <point x="300" y="150"></point>
+      </polygon>
+    </shape>
+    <shape name="box" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="285"></point>
+        <point x="285" y="225"></point>
+        <point x="285" y="75"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="135"></point>
+        <point x="15" y="75"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="75"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="75"></point>
+        <point x="15" y="225"></point>
+        <point x="150" y="285"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <line endX="150" startY="285" marked="false" color="255" endY="135" startX="150"></line>
+      <line endX="15" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+      <line endX="285" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+    </shape>
+    <shape name="bug" rotatable="true" editableColorIndex="0">
+      <circle x="96" y="182" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="110" y="127" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <circle x="110" y="75" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <line endX="80" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+      <line endX="220" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+    </shape>
+    <shape name="butterfly" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="209" y="199"></point>
+        <point x="225" y="225"></point>
+        <point x="225" y="255"></point>
+        <point x="195" y="270"></point>
+        <point x="165" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="89" y="198"></point>
+        <point x="75" y="225"></point>
+        <point x="75" y="255"></point>
+        <point x="105" y="270"></point>
+        <point x="135" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="139" y="148"></point>
+        <point x="100" y="105"></point>
+        <point x="55" y="90"></point>
+        <point x="25" y="90"></point>
+        <point x="10" y="105"></point>
+        <point x="10" y="135"></point>
+        <point x="25" y="180"></point>
+        <point x="40" y="195"></point>
+        <point x="85" y="194"></point>
+        <point x="139" y="163"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="162" y="150"></point>
+        <point x="200" y="105"></point>
+        <point x="245" y="90"></point>
+        <point x="275" y="90"></point>
+        <point x="290" y="105"></point>
+        <point x="290" y="135"></point>
+        <point x="275" y="180"></point>
+        <point x="260" y="195"></point>
+        <point x="215" y="195"></point>
+        <point x="162" y="165"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="135" y="225"></point>
+        <point x="120" y="150"></point>
+        <point x="135" y="120"></point>
+        <point x="150" y="105"></point>
+        <point x="165" y="120"></point>
+        <point x="180" y="150"></point>
+        <point x="165" y="225"></point>
+      </polygon>
+      <circle x="135" y="90" marked="false" color="255" diameter="30" filled="true"></circle>
+      <line endX="195" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+      <line endX="105" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+    </shape>
+    <shape name="car" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="300" y="180"></point>
+        <point x="279" y="164"></point>
+        <point x="261" y="144"></point>
+        <point x="240" y="135"></point>
+        <point x="226" y="132"></point>
+        <point x="213" y="106"></point>
+        <point x="203" y="84"></point>
+        <point x="185" y="63"></point>
+        <point x="159" y="50"></point>
+        <point x="135" y="50"></point>
+        <point x="75" y="60"></point>
+        <point x="0" y="150"></point>
+        <point x="0" y="165"></point>
+        <point x="0" y="225"></point>
+        <point x="300" y="225"></point>
+        <point x="300" y="180"></point>
+      </polygon>
+      <circle x="180" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <circle x="30" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="162" y="80"></point>
+        <point x="132" y="78"></point>
+        <point x="134" y="135"></point>
+        <point x="209" y="135"></point>
+        <point x="194" y="105"></point>
+        <point x="189" y="96"></point>
+        <point x="180" y="89"></point>
+      </polygon>
+      <circle x="47" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+      <circle x="195" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+    </shape>
+    <shape name="circle" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="circle 2" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+    </shape>
+    <shape name="cow" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="200" y="193"></point>
+        <point x="197" y="249"></point>
+        <point x="179" y="249"></point>
+        <point x="177" y="196"></point>
+        <point x="166" y="187"></point>
+        <point x="140" y="189"></point>
+        <point x="93" y="191"></point>
+        <point x="78" y="179"></point>
+        <point x="72" y="211"></point>
+        <point x="49" y="209"></point>
+        <point x="48" y="181"></point>
+        <point x="37" y="149"></point>
+        <point x="25" y="120"></point>
+        <point x="25" y="89"></point>
+        <point x="45" y="72"></point>
+        <point x="103" y="84"></point>
+        <point x="179" y="75"></point>
+        <point x="198" y="76"></point>
+        <point x="252" y="64"></point>
+        <point x="272" y="81"></point>
+        <point x="293" y="103"></point>
+        <point x="285" y="121"></point>
+        <point x="255" y="121"></point>
+        <point x="242" y="118"></point>
+        <point x="224" y="167"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="73" y="210"></point>
+        <point x="86" y="251"></point>
+        <point x="62" y="249"></point>
+        <point x="48" y="208"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="25" y="114"></point>
+        <point x="16" y="195"></point>
+        <point x="9" y="204"></point>
+        <point x="23" y="213"></point>
+        <point x="25" y="200"></point>
+        <point x="39" y="123"></point>
+      </polygon>
+    </shape>
+    <shape name="cylinder" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="dot" rotatable="false" editableColorIndex="0">
+      <circle x="90" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+    </shape>
+    <shape name="face happy" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="90" y="239"></point>
+        <point x="62" y="213"></point>
+        <point x="47" y="191"></point>
+        <point x="67" y="179"></point>
+        <point x="90" y="203"></point>
+        <point x="109" y="218"></point>
+        <point x="150" y="225"></point>
+        <point x="192" y="218"></point>
+        <point x="210" y="203"></point>
+        <point x="227" y="181"></point>
+        <point x="251" y="194"></point>
+        <point x="236" y="217"></point>
+        <point x="212" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="face neutral" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="7" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <rectangle endX="240" startY="195" marked="false" color="255" endY="225" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="face sad" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="168"></point>
+        <point x="90" y="184"></point>
+        <point x="62" y="210"></point>
+        <point x="47" y="232"></point>
+        <point x="67" y="244"></point>
+        <point x="90" y="220"></point>
+        <point x="109" y="205"></point>
+        <point x="150" y="198"></point>
+        <point x="192" y="205"></point>
+        <point x="210" y="220"></point>
+        <point x="227" y="242"></point>
+        <point x="251" y="229"></point>
+        <point x="236" y="206"></point>
+        <point x="212" y="183"></point>
+      </polygon>
+    </shape>
+    <shape name="fish" rotatable="false" editableColorIndex="0">
+      <polygon color="-1" filled="true" marked="false">
+        <point x="44" y="131"></point>
+        <point x="21" y="87"></point>
+        <point x="15" y="86"></point>
+        <point x="0" y="120"></point>
+        <point x="15" y="150"></point>
+        <point x="0" y="180"></point>
+        <point x="13" y="214"></point>
+        <point x="20" y="212"></point>
+        <point x="45" y="166"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="135" y="195"></point>
+        <point x="119" y="235"></point>
+        <point x="95" y="218"></point>
+        <point x="76" y="210"></point>
+        <point x="46" y="204"></point>
+        <point x="60" y="165"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="75" y="45"></point>
+        <point x="83" y="77"></point>
+        <point x="71" y="103"></point>
+        <point x="86" y="114"></point>
+        <point x="166" y="78"></point>
+        <point x="135" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="136"></point>
+        <point x="151" y="77"></point>
+        <point x="226" y="81"></point>
+        <point x="280" y="119"></point>
+        <point x="292" y="146"></point>
+        <point x="292" y="160"></point>
+        <point x="287" y="170"></point>
+        <point x="270" y="195"></point>
+        <point x="195" y="210"></point>
+        <point x="151" y="212"></point>
+        <point x="30" y="166"></point>
+      </polygon>
+      <circle x="215" y="106" marked="false" color="255" diameter="30" filled="true"></circle>
+    </shape>
+    <shape name="flag" rotatable="false" editableColorIndex="0">
+      <rectangle endX="75" startY="15" marked="true" color="-1920102913" endY="300" startX="60" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="90" y="150"></point>
+        <point x="270" y="90"></point>
+        <point x="90" y="30"></point>
+      </polygon>
+      <line endX="90" startY="135" marked="true" color="-1920102913" endY="135" startX="75"></line>
+      <line endX="90" startY="45" marked="true" color="-1920102913" endY="45" startX="75"></line>
+    </shape>
+    <shape name="flower" rotatable="false" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="135" y="120"></point>
+        <point x="165" y="165"></point>
+        <point x="180" y="210"></point>
+        <point x="180" y="240"></point>
+        <point x="150" y="300"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="240"></point>
+        <point x="195" y="195"></point>
+        <point x="165" y="135"></point>
+      </polygon>
+      <circle x="85" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="147" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="192" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="85" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="70" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="25" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="96" y="51" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="113" y="68" marked="false" color="255" diameter="74" filled="true"></circle>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="189" y="233"></point>
+        <point x="219" y="188"></point>
+        <point x="249" y="173"></point>
+        <point x="279" y="188"></point>
+        <point x="234" y="218"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="180" y="255"></point>
+        <point x="150" y="210"></point>
+        <point x="105" y="210"></point>
+        <point x="75" y="240"></point>
+        <point x="135" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="house" rotatable="false" editableColorIndex="0">
+      <rectangle endX="255" startY="120" marked="true" color="-1920102913" endY="285" startX="45" filled="true"></rectangle>
+      <rectangle endX="180" startY="210" marked="false" color="255" endY="285" startX="120" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="120"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+      <line endX="270" startY="120" marked="false" color="255" endY="120" startX="30"></line>
+    </shape>
+    <shape name="leaf" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="210"></point>
+        <point x="135" y="195"></point>
+        <point x="120" y="210"></point>
+        <point x="60" y="210"></point>
+        <point x="30" y="195"></point>
+        <point x="60" y="180"></point>
+        <point x="60" y="165"></point>
+        <point x="15" y="135"></point>
+        <point x="30" y="120"></point>
+        <point x="15" y="105"></point>
+        <point x="40" y="104"></point>
+        <point x="45" y="90"></point>
+        <point x="60" y="90"></point>
+        <point x="90" y="105"></point>
+        <point x="105" y="120"></point>
+        <point x="120" y="120"></point>
+        <point x="105" y="60"></point>
+        <point x="120" y="60"></point>
+        <point x="135" y="30"></point>
+        <point x="150" y="15"></point>
+        <point x="165" y="30"></point>
+        <point x="180" y="60"></point>
+        <point x="195" y="60"></point>
+        <point x="180" y="120"></point>
+        <point x="195" y="120"></point>
+        <point x="210" y="105"></point>
+        <point x="240" y="90"></point>
+        <point x="255" y="90"></point>
+        <point x="263" y="104"></point>
+        <point x="285" y="105"></point>
+        <point x="270" y="120"></point>
+        <point x="285" y="135"></point>
+        <point x="240" y="165"></point>
+        <point x="240" y="180"></point>
+        <point x="270" y="195"></point>
+        <point x="240" y="210"></point>
+        <point x="180" y="210"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="195"></point>
+        <point x="135" y="240"></point>
+        <point x="120" y="255"></point>
+        <point x="105" y="255"></point>
+        <point x="105" y="285"></point>
+        <point x="135" y="285"></point>
+        <point x="165" y="240"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+    </shape>
+    <shape name="line" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="300" startX="150"></line>
+    </shape>
+    <shape name="line half" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="150" startX="150"></line>
+    </shape>
+    <shape name="link" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="300" startX="150"></line>
+    </shape>
+    <shape name="link direction" rotatable="true" editableColorIndex="0">
+      <line endX="30" startY="150" marked="true" color="-1920102913" endY="225" startX="150"></line>
+      <line endX="270" startY="150" marked="true" color="-1920102913" endY="225" startX="150"></line>
+    </shape>
+    <shape name="pentagon" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="15"></point>
+        <point x="15" y="120"></point>
+        <point x="60" y="285"></point>
+        <point x="240" y="285"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+    </shape>
+    <shape name="person" rotatable="false" editableColorIndex="0">
+      <circle x="110" y="5" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="120" y="195"></point>
+        <point x="90" y="285"></point>
+        <point x="105" y="300"></point>
+        <point x="135" y="300"></point>
+        <point x="150" y="225"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="300"></point>
+        <point x="210" y="285"></point>
+        <point x="180" y="195"></point>
+        <point x="195" y="90"></point>
+      </polygon>
+      <rectangle endX="172" startY="79" marked="true" color="-1920102913" endY="94" startX="127" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="195" y="90"></point>
+        <point x="240" y="150"></point>
+        <point x="225" y="180"></point>
+        <point x="165" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="60" y="150"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="105"></point>
+      </polygon>
+    </shape>
+    <shape name="plant" rotatable="false" editableColorIndex="0">
+      <rectangle endX="165" startY="90" marked="true" color="-1920102913" endY="300" startX="135" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="255"></point>
+        <point x="90" y="210"></point>
+        <point x="45" y="195"></point>
+        <point x="75" y="255"></point>
+        <point x="135" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="255"></point>
+        <point x="210" y="210"></point>
+        <point x="255" y="195"></point>
+        <point x="225" y="255"></point>
+        <point x="165" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="180"></point>
+        <point x="90" y="135"></point>
+        <point x="45" y="120"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="180"></point>
+        <point x="165" y="210"></point>
+        <point x="225" y="180"></point>
+        <point x="255" y="120"></point>
+        <point x="210" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="105"></point>
+        <point x="90" y="60"></point>
+        <point x="45" y="45"></point>
+        <point x="75" y="105"></point>
+        <point x="135" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="105"></point>
+        <point x="165" y="135"></point>
+        <point x="225" y="105"></point>
+        <point x="255" y="45"></point>
+        <point x="210" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="90"></point>
+        <point x="120" y="45"></point>
+        <point x="150" y="15"></point>
+        <point x="180" y="45"></point>
+        <point x="165" y="90"></point>
+      </polygon>
+    </shape>
+    <shape name="square" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+    </shape>
+    <shape name="square 2" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+      <rectangle endX="240" startY="60" marked="false" color="255" endY="240" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="star" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="151" y="1"></point>
+        <point x="185" y="108"></point>
+        <point x="298" y="108"></point>
+        <point x="207" y="175"></point>
+        <point x="242" y="282"></point>
+        <point x="151" y="216"></point>
+        <point x="59" y="282"></point>
+        <point x="94" y="175"></point>
+        <point x="3" y="108"></point>
+        <point x="116" y="108"></point>
+      </polygon>
+    </shape>
+    <shape name="target" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <circle x="60" y="60" marked="true" color="-1920102913" diameter="180" filled="true"></circle>
+      <circle x="90" y="90" marked="false" color="255" diameter="120" filled="true"></circle>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+    </shape>
+    <shape name="tree" rotatable="false" editableColorIndex="0">
+      <circle x="118" y="3" marked="true" color="-1920102913" diameter="94" filled="true"></circle>
+      <rectangle endX="180" startY="195" marked="false" color="-1653716737" endY="300" startX="120" filled="true"></rectangle>
+      <circle x="65" y="21" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="116" y="41" marked="true" color="-1920102913" diameter="127" filled="true"></circle>
+      <circle x="45" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+      <circle x="104" y="74" marked="true" color="-1920102913" diameter="152" filled="true"></circle>
+    </shape>
+    <shape name="triangle" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+    </shape>
+    <shape name="triangle 2" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="151" y="99"></point>
+        <point x="225" y="223"></point>
+        <point x="75" y="224"></point>
+      </polygon>
+    </shape>
+    <shape name="truck" rotatable="false" editableColorIndex="0">
+      <rectangle endX="195" startY="45" marked="true" color="-1920102913" endY="187" startX="4" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="296" y="193"></point>
+        <point x="296" y="150"></point>
+        <point x="259" y="134"></point>
+        <point x="244" y="104"></point>
+        <point x="208" y="104"></point>
+        <point x="207" y="194"></point>
+      </polygon>
+      <rectangle endX="195" startY="60" marked="false" color="-1" endY="105" startX="195" filled="true"></rectangle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="238" y="112"></point>
+        <point x="252" y="141"></point>
+        <point x="219" y="141"></point>
+        <point x="218" y="112"></point>
+      </polygon>
+      <circle x="234" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <rectangle endX="214" startY="185" marked="true" color="-1920102913" endY="194" startX="181" filled="true"></rectangle>
+      <circle x="144" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="144" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="234" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+    </shape>
+    <shape name="turtle" rotatable="true" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="215" y="204"></point>
+        <point x="240" y="233"></point>
+        <point x="246" y="254"></point>
+        <point x="228" y="266"></point>
+        <point x="215" y="252"></point>
+        <point x="193" y="210"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="195" y="90"></point>
+        <point x="225" y="75"></point>
+        <point x="245" y="75"></point>
+        <point x="260" y="89"></point>
+        <point x="269" y="108"></point>
+        <point x="261" y="124"></point>
+        <point x="240" y="105"></point>
+        <point x="225" y="105"></point>
+        <point x="210" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="105" y="90"></point>
+        <point x="75" y="75"></point>
+        <point x="55" y="75"></point>
+        <point x="40" y="89"></point>
+        <point x="31" y="108"></point>
+        <point x="39" y="124"></point>
+        <point x="60" y="105"></point>
+        <point x="75" y="105"></point>
+        <point x="90" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="132" y="85"></point>
+        <point x="134" y="64"></point>
+        <point x="107" y="51"></point>
+        <point x="108" y="17"></point>
+        <point x="150" y="2"></point>
+        <point x="192" y="18"></point>
+        <point x="192" y="52"></point>
+        <point x="169" y="65"></point>
+        <point x="172" y="87"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="85" y="204"></point>
+        <point x="60" y="233"></point>
+        <point x="54" y="254"></point>
+        <point x="72" y="266"></point>
+        <point x="85" y="252"></point>
+        <point x="107" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="119" y="75"></point>
+        <point x="179" y="75"></point>
+        <point x="209" y="101"></point>
+        <point x="224" y="135"></point>
+        <point x="220" y="225"></point>
+        <point x="175" y="261"></point>
+        <point x="128" y="261"></point>
+        <point x="81" y="224"></point>
+        <point x="74" y="135"></point>
+        <point x="88" y="99"></point>
+      </polygon>
+    </shape>
+    <shape name="wheel" rotatable="false" editableColorIndex="0">
+      <circle x="3" y="3" marked="true" color="-1920102913" diameter="294" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <line endX="150" startY="285" marked="true" color="-1920102913" endY="15" startX="150"></line>
+      <line endX="285" startY="150" marked="true" color="-1920102913" endY="150" startX="15"></line>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+      <line endX="79" startY="40" marked="true" color="-1920102913" endY="269" startX="216"></line>
+      <line endX="269" startY="84" marked="true" color="-1920102913" endY="221" startX="40"></line>
+      <line endX="269" startY="216" marked="true" color="-1920102913" endY="79" startX="40"></line>
+      <line endX="221" startY="40" marked="true" color="-1920102913" endY="269" startX="84"></line>
+    </shape>
+    <shape name="x" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="270" y="75"></point>
+        <point x="225" y="30"></point>
+        <point x="30" y="225"></point>
+        <point x="75" y="270"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="75"></point>
+        <point x="75" y="30"></point>
+        <point x="270" y="225"></point>
+        <point x="225" y="270"></point>
+      </polygon>
+    </shape>
+  </turtleShapes>
+  <linkShapes>
+    <shape name="default" curviness="0.0">
+      <lines>
+        <line x="-0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+        <line x="0.0" visible="true">
+          <dash value="1.0"></dash>
+          <dash value="0.0"></dash>
+        </line>
+        <line x="0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+      </lines>
+      <indicator>
+        <shape name="link direction" rotatable="true" editableColorIndex="0">
+          <line endX="90" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+          <line endX="210" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+        </shape>
+      </indicator>
+    </shape>
+  </linkShapes>
+  <previewCommands>setup repeat 75 [ go ]</previewCommands>
+  <experiments>
+    <experiment name="N3-limit1" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>fit-correlation</metric>
+        <metric>fit-l2</metric>
+        <metric>count households</metric>
+        <metric>extinction-year</metric>
+        <metric>peak1-capacity</metric>
+        <metric>peak2-capacity</metric>
+        <metric>capacity-peak-ratio</metric>
+        <metric>peak1-population</metric>
+        <metric>peak2-population</metric>
+        <metric>population-peak-ratio</metric>
+        <metric>sim-series</metric>
+        <metric>hist-series</metric>
+        <metric>cap-series</metric>
+        <metric>mean-farmed-quality</metric>
+        <metric>dead-cells</metric>
+        <metric>soil-1130</metric>
+        <metric>soil-1260</metric>
+        <metric>max [cumulative-farm-years] of patches</metric>
+        <metric>soil-series</metric>
+        <metric>mean-crowding</metric>
+        <metric>max-crowding</metric>
+        <metric>peak1-crowded</metric>
+        <metric>peak2-crowded</metric>
+        <metric>crowded-peak-ratio</metric>
+        <metric>capc-series</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="fertility">
+          <value value="0.155"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="death-age">
+          <value value="38"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="fertility-ends-age">
+          <value value="34"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-adjustment">
+          <value value="0.54"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-variance">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="historic-view?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="map-view">
+          <value value="&quot;zones&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="uplands-fix?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="setup-yield-fix?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="soil-heterogeneity">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="recovery-rate">
+          <value value="0.001"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="degradation-factor">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="crowding-limit">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="intensification-return">
+          <value value="0.5"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="depletion-rate">
+          <value value="0"></value>
+          <value value="5.0E-4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="run-seed">
+          <value value="1"></value>
+          <value value="2"></value>
+          <value value="3"></value>
+          <value value="4"></value>
+          <value value="5"></value>
+          <value value="6"></value>
+          <value value="7"></value>
+          <value value="8"></value>
+          <value value="9"></value>
+          <value value="10"></value>
+          <value value="11"></value>
+          <value value="12"></value>
+          <value value="13"></value>
+          <value value="14"></value>
+          <value value="15"></value>
+          <value value="16"></value>
+          <value value="17"></value>
+          <value value="18"></value>
+          <value value="19"></value>
+          <value value="20"></value>
+          <value value="21"></value>
+          <value value="22"></value>
+          <value value="23"></value>
+          <value value="24"></value>
+          <value value="25"></value>
+          <value value="26"></value>
+          <value value="27"></value>
+          <value value="28"></value>
+          <value value="29"></value>
+          <value value="30"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="E3-crowding-sweep" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>fit-correlation</metric>
+        <metric>fit-l2</metric>
+        <metric>count households</metric>
+        <metric>extinction-year</metric>
+        <metric>peak1-capacity</metric>
+        <metric>peak2-capacity</metric>
+        <metric>capacity-peak-ratio</metric>
+        <metric>peak1-population</metric>
+        <metric>peak2-population</metric>
+        <metric>population-peak-ratio</metric>
+        <metric>sim-series</metric>
+        <metric>hist-series</metric>
+        <metric>cap-series</metric>
+        <metric>mean-farmed-quality</metric>
+        <metric>dead-cells</metric>
+        <metric>soil-1130</metric>
+        <metric>soil-1260</metric>
+        <metric>max [cumulative-farm-years] of patches</metric>
+        <metric>soil-series</metric>
+        <metric>mean-crowding</metric>
+        <metric>max-crowding</metric>
+        <metric>peak1-crowded</metric>
+        <metric>peak2-crowded</metric>
+        <metric>crowded-peak-ratio</metric>
+        <metric>capc-series</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="fertility">
+          <value value="0.155"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="death-age">
+          <value value="38"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="fertility-ends-age">
+          <value value="34"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-adjustment">
+          <value value="0.54"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-variance">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="historic-view?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="map-view">
+          <value value="&quot;zones&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="uplands-fix?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="setup-yield-fix?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="soil-heterogeneity">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="recovery-rate">
+          <value value="0.001"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="degradation-factor">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="crowding-limit">
+          <value value="2"></value>
+          <value value="3"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="intensification-return">
+          <value value="0.6"></value>
+          <value value="0.7"></value>
+          <value value="0.8"></value>
+          <value value="0.9"></value>
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="depletion-rate">
+          <value value="0"></value>
+          <value value="5.0E-4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="run-seed">
+          <value value="1"></value>
+          <value value="2"></value>
+          <value value="3"></value>
+          <value value="4"></value>
+          <value value="5"></value>
+          <value value="6"></value>
+          <value value="7"></value>
+          <value value="8"></value>
+          <value value="9"></value>
+          <value value="10"></value>
+          <value value="11"></value>
+          <value value="12"></value>
+          <value value="13"></value>
+          <value value="14"></value>
+          <value value="15"></value>
+          <value value="16"></value>
+          <value value="17"></value>
+          <value value="18"></value>
+          <value value="19"></value>
+          <value value="20"></value>
+          <value value="21"></value>
+          <value value="22"></value>
+          <value value="23"></value>
+          <value value="24"></value>
+          <value value="25"></value>
+          <value value="26"></value>
+          <value value="27"></value>
+          <value value="28"></value>
+          <value value="29"></value>
+          <value value="30"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="E3-holdout-controls" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>fit-correlation</metric>
+        <metric>fit-l2</metric>
+        <metric>count households</metric>
+        <metric>extinction-year</metric>
+        <metric>peak1-capacity</metric>
+        <metric>peak2-capacity</metric>
+        <metric>capacity-peak-ratio</metric>
+        <metric>peak1-population</metric>
+        <metric>peak2-population</metric>
+        <metric>population-peak-ratio</metric>
+        <metric>sim-series</metric>
+        <metric>hist-series</metric>
+        <metric>cap-series</metric>
+        <metric>mean-farmed-quality</metric>
+        <metric>dead-cells</metric>
+        <metric>soil-1130</metric>
+        <metric>soil-1260</metric>
+        <metric>max [cumulative-farm-years] of patches</metric>
+        <metric>soil-series</metric>
+        <metric>mean-crowding</metric>
+        <metric>max-crowding</metric>
+        <metric>peak1-crowded</metric>
+        <metric>peak2-crowded</metric>
+        <metric>crowded-peak-ratio</metric>
+        <metric>capc-series</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="fertility">
+          <value value="0.155"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="death-age">
+          <value value="38"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="fertility-ends-age">
+          <value value="34"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-adjustment">
+          <value value="0.54"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-variance">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="historic-view?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="map-view">
+          <value value="&quot;zones&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="uplands-fix?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="setup-yield-fix?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="soil-heterogeneity">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="recovery-rate">
+          <value value="0.001"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="degradation-factor">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="crowding-limit">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="intensification-return">
+          <value value="0.5"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="depletion-rate">
+          <value value="0"></value>
+          <value value="5.0E-4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="run-seed">
+          <value value="101"></value>
+          <value value="102"></value>
+          <value value="103"></value>
+          <value value="104"></value>
+          <value value="105"></value>
+          <value value="106"></value>
+          <value value="107"></value>
+          <value value="108"></value>
+          <value value="109"></value>
+          <value value="110"></value>
+          <value value="111"></value>
+          <value value="112"></value>
+          <value value="113"></value>
+          <value value="114"></value>
+          <value value="115"></value>
+          <value value="116"></value>
+          <value value="117"></value>
+          <value value="118"></value>
+          <value value="119"></value>
+          <value value="120"></value>
+          <value value="121"></value>
+          <value value="122"></value>
+          <value value="123"></value>
+          <value value="124"></value>
+          <value value="125"></value>
+          <value value="126"></value>
+          <value value="127"></value>
+          <value value="128"></value>
+          <value value="129"></value>
+          <value value="130"></value>
+          <value value="131"></value>
+          <value value="132"></value>
+          <value value="133"></value>
+          <value value="134"></value>
+          <value value="135"></value>
+          <value value="136"></value>
+          <value value="137"></value>
+          <value value="138"></value>
+          <value value="139"></value>
+          <value value="140"></value>
+          <value value="141"></value>
+          <value value="142"></value>
+          <value value="143"></value>
+          <value value="144"></value>
+          <value value="145"></value>
+          <value value="146"></value>
+          <value value="147"></value>
+          <value value="148"></value>
+          <value value="149"></value>
+          <value value="150"></value>
+          <value value="151"></value>
+          <value value="152"></value>
+          <value value="153"></value>
+          <value value="154"></value>
+          <value value="155"></value>
+          <value value="156"></value>
+          <value value="157"></value>
+          <value value="158"></value>
+          <value value="159"></value>
+          <value value="160"></value>
+          <value value="161"></value>
+          <value value="162"></value>
+          <value value="163"></value>
+          <value value="164"></value>
+          <value value="165"></value>
+          <value value="166"></value>
+          <value value="167"></value>
+          <value value="168"></value>
+          <value value="169"></value>
+          <value value="170"></value>
+          <value value="171"></value>
+          <value value="172"></value>
+          <value value="173"></value>
+          <value value="174"></value>
+          <value value="175"></value>
+          <value value="176"></value>
+          <value value="177"></value>
+          <value value="178"></value>
+          <value value="179"></value>
+          <value value="180"></value>
+          <value value="181"></value>
+          <value value="182"></value>
+          <value value="183"></value>
+          <value value="184"></value>
+          <value value="185"></value>
+          <value value="186"></value>
+          <value value="187"></value>
+          <value value="188"></value>
+          <value value="189"></value>
+          <value value="190"></value>
+          <value value="191"></value>
+          <value value="192"></value>
+          <value value="193"></value>
+          <value value="194"></value>
+          <value value="195"></value>
+          <value value="196"></value>
+          <value value="197"></value>
+          <value value="198"></value>
+          <value value="199"></value>
+          <value value="200"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="E3-holdout-cell1" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>fit-correlation</metric>
+        <metric>fit-l2</metric>
+        <metric>count households</metric>
+        <metric>extinction-year</metric>
+        <metric>peak1-capacity</metric>
+        <metric>peak2-capacity</metric>
+        <metric>capacity-peak-ratio</metric>
+        <metric>peak1-population</metric>
+        <metric>peak2-population</metric>
+        <metric>population-peak-ratio</metric>
+        <metric>sim-series</metric>
+        <metric>hist-series</metric>
+        <metric>cap-series</metric>
+        <metric>mean-farmed-quality</metric>
+        <metric>dead-cells</metric>
+        <metric>soil-1130</metric>
+        <metric>soil-1260</metric>
+        <metric>max [cumulative-farm-years] of patches</metric>
+        <metric>soil-series</metric>
+        <metric>mean-crowding</metric>
+        <metric>max-crowding</metric>
+        <metric>peak1-crowded</metric>
+        <metric>peak2-crowded</metric>
+        <metric>crowded-peak-ratio</metric>
+        <metric>capc-series</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="fertility">
+          <value value="0.155"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="death-age">
+          <value value="38"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="fertility-ends-age">
+          <value value="34"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-adjustment">
+          <value value="0.54"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-variance">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="historic-view?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="map-view">
+          <value value="&quot;zones&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="uplands-fix?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="setup-yield-fix?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="soil-heterogeneity">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="depletion-rate">
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="recovery-rate">
+          <value value="0.001"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="degradation-factor">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="crowding-limit">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="intensification-return">
+          <value value="0.9"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="run-seed">
+          <value value="101"></value>
+          <value value="102"></value>
+          <value value="103"></value>
+          <value value="104"></value>
+          <value value="105"></value>
+          <value value="106"></value>
+          <value value="107"></value>
+          <value value="108"></value>
+          <value value="109"></value>
+          <value value="110"></value>
+          <value value="111"></value>
+          <value value="112"></value>
+          <value value="113"></value>
+          <value value="114"></value>
+          <value value="115"></value>
+          <value value="116"></value>
+          <value value="117"></value>
+          <value value="118"></value>
+          <value value="119"></value>
+          <value value="120"></value>
+          <value value="121"></value>
+          <value value="122"></value>
+          <value value="123"></value>
+          <value value="124"></value>
+          <value value="125"></value>
+          <value value="126"></value>
+          <value value="127"></value>
+          <value value="128"></value>
+          <value value="129"></value>
+          <value value="130"></value>
+          <value value="131"></value>
+          <value value="132"></value>
+          <value value="133"></value>
+          <value value="134"></value>
+          <value value="135"></value>
+          <value value="136"></value>
+          <value value="137"></value>
+          <value value="138"></value>
+          <value value="139"></value>
+          <value value="140"></value>
+          <value value="141"></value>
+          <value value="142"></value>
+          <value value="143"></value>
+          <value value="144"></value>
+          <value value="145"></value>
+          <value value="146"></value>
+          <value value="147"></value>
+          <value value="148"></value>
+          <value value="149"></value>
+          <value value="150"></value>
+          <value value="151"></value>
+          <value value="152"></value>
+          <value value="153"></value>
+          <value value="154"></value>
+          <value value="155"></value>
+          <value value="156"></value>
+          <value value="157"></value>
+          <value value="158"></value>
+          <value value="159"></value>
+          <value value="160"></value>
+          <value value="161"></value>
+          <value value="162"></value>
+          <value value="163"></value>
+          <value value="164"></value>
+          <value value="165"></value>
+          <value value="166"></value>
+          <value value="167"></value>
+          <value value="168"></value>
+          <value value="169"></value>
+          <value value="170"></value>
+          <value value="171"></value>
+          <value value="172"></value>
+          <value value="173"></value>
+          <value value="174"></value>
+          <value value="175"></value>
+          <value value="176"></value>
+          <value value="177"></value>
+          <value value="178"></value>
+          <value value="179"></value>
+          <value value="180"></value>
+          <value value="181"></value>
+          <value value="182"></value>
+          <value value="183"></value>
+          <value value="184"></value>
+          <value value="185"></value>
+          <value value="186"></value>
+          <value value="187"></value>
+          <value value="188"></value>
+          <value value="189"></value>
+          <value value="190"></value>
+          <value value="191"></value>
+          <value value="192"></value>
+          <value value="193"></value>
+          <value value="194"></value>
+          <value value="195"></value>
+          <value value="196"></value>
+          <value value="197"></value>
+          <value value="198"></value>
+          <value value="199"></value>
+          <value value="200"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="E3-holdout-cell2" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>fit-correlation</metric>
+        <metric>fit-l2</metric>
+        <metric>count households</metric>
+        <metric>extinction-year</metric>
+        <metric>peak1-capacity</metric>
+        <metric>peak2-capacity</metric>
+        <metric>capacity-peak-ratio</metric>
+        <metric>peak1-population</metric>
+        <metric>peak2-population</metric>
+        <metric>population-peak-ratio</metric>
+        <metric>sim-series</metric>
+        <metric>hist-series</metric>
+        <metric>cap-series</metric>
+        <metric>mean-farmed-quality</metric>
+        <metric>dead-cells</metric>
+        <metric>soil-1130</metric>
+        <metric>soil-1260</metric>
+        <metric>max [cumulative-farm-years] of patches</metric>
+        <metric>soil-series</metric>
+        <metric>mean-crowding</metric>
+        <metric>max-crowding</metric>
+        <metric>peak1-crowded</metric>
+        <metric>peak2-crowded</metric>
+        <metric>crowded-peak-ratio</metric>
+        <metric>capc-series</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="fertility">
+          <value value="0.155"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="death-age">
+          <value value="38"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="fertility-ends-age">
+          <value value="34"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-adjustment">
+          <value value="0.54"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-variance">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="historic-view?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="map-view">
+          <value value="&quot;zones&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="uplands-fix?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="setup-yield-fix?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="soil-heterogeneity">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="depletion-rate">
+          <value value="5.0E-4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="recovery-rate">
+          <value value="0.001"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="degradation-factor">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="crowding-limit">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="intensification-return">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="run-seed">
+          <value value="101"></value>
+          <value value="102"></value>
+          <value value="103"></value>
+          <value value="104"></value>
+          <value value="105"></value>
+          <value value="106"></value>
+          <value value="107"></value>
+          <value value="108"></value>
+          <value value="109"></value>
+          <value value="110"></value>
+          <value value="111"></value>
+          <value value="112"></value>
+          <value value="113"></value>
+          <value value="114"></value>
+          <value value="115"></value>
+          <value value="116"></value>
+          <value value="117"></value>
+          <value value="118"></value>
+          <value value="119"></value>
+          <value value="120"></value>
+          <value value="121"></value>
+          <value value="122"></value>
+          <value value="123"></value>
+          <value value="124"></value>
+          <value value="125"></value>
+          <value value="126"></value>
+          <value value="127"></value>
+          <value value="128"></value>
+          <value value="129"></value>
+          <value value="130"></value>
+          <value value="131"></value>
+          <value value="132"></value>
+          <value value="133"></value>
+          <value value="134"></value>
+          <value value="135"></value>
+          <value value="136"></value>
+          <value value="137"></value>
+          <value value="138"></value>
+          <value value="139"></value>
+          <value value="140"></value>
+          <value value="141"></value>
+          <value value="142"></value>
+          <value value="143"></value>
+          <value value="144"></value>
+          <value value="145"></value>
+          <value value="146"></value>
+          <value value="147"></value>
+          <value value="148"></value>
+          <value value="149"></value>
+          <value value="150"></value>
+          <value value="151"></value>
+          <value value="152"></value>
+          <value value="153"></value>
+          <value value="154"></value>
+          <value value="155"></value>
+          <value value="156"></value>
+          <value value="157"></value>
+          <value value="158"></value>
+          <value value="159"></value>
+          <value value="160"></value>
+          <value value="161"></value>
+          <value value="162"></value>
+          <value value="163"></value>
+          <value value="164"></value>
+          <value value="165"></value>
+          <value value="166"></value>
+          <value value="167"></value>
+          <value value="168"></value>
+          <value value="169"></value>
+          <value value="170"></value>
+          <value value="171"></value>
+          <value value="172"></value>
+          <value value="173"></value>
+          <value value="174"></value>
+          <value value="175"></value>
+          <value value="176"></value>
+          <value value="177"></value>
+          <value value="178"></value>
+          <value value="179"></value>
+          <value value="180"></value>
+          <value value="181"></value>
+          <value value="182"></value>
+          <value value="183"></value>
+          <value value="184"></value>
+          <value value="185"></value>
+          <value value="186"></value>
+          <value value="187"></value>
+          <value value="188"></value>
+          <value value="189"></value>
+          <value value="190"></value>
+          <value value="191"></value>
+          <value value="192"></value>
+          <value value="193"></value>
+          <value value="194"></value>
+          <value value="195"></value>
+          <value value="196"></value>
+          <value value="197"></value>
+          <value value="198"></value>
+          <value value="199"></value>
+          <value value="200"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="E3-holdout-cell3" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>fit-correlation</metric>
+        <metric>fit-l2</metric>
+        <metric>count households</metric>
+        <metric>extinction-year</metric>
+        <metric>peak1-capacity</metric>
+        <metric>peak2-capacity</metric>
+        <metric>capacity-peak-ratio</metric>
+        <metric>peak1-population</metric>
+        <metric>peak2-population</metric>
+        <metric>population-peak-ratio</metric>
+        <metric>sim-series</metric>
+        <metric>hist-series</metric>
+        <metric>cap-series</metric>
+        <metric>mean-farmed-quality</metric>
+        <metric>dead-cells</metric>
+        <metric>soil-1130</metric>
+        <metric>soil-1260</metric>
+        <metric>max [cumulative-farm-years] of patches</metric>
+        <metric>soil-series</metric>
+        <metric>mean-crowding</metric>
+        <metric>max-crowding</metric>
+        <metric>peak1-crowded</metric>
+        <metric>peak2-crowded</metric>
+        <metric>crowded-peak-ratio</metric>
+        <metric>capc-series</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="fertility">
+          <value value="0.155"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="death-age">
+          <value value="38"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="fertility-ends-age">
+          <value value="34"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-adjustment">
+          <value value="0.54"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-variance">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="historic-view?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="map-view">
+          <value value="&quot;zones&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="uplands-fix?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="setup-yield-fix?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="soil-heterogeneity">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="depletion-rate">
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="recovery-rate">
+          <value value="0.001"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="degradation-factor">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="crowding-limit">
+          <value value="3"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="intensification-return">
+          <value value="0.8"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="run-seed">
+          <value value="101"></value>
+          <value value="102"></value>
+          <value value="103"></value>
+          <value value="104"></value>
+          <value value="105"></value>
+          <value value="106"></value>
+          <value value="107"></value>
+          <value value="108"></value>
+          <value value="109"></value>
+          <value value="110"></value>
+          <value value="111"></value>
+          <value value="112"></value>
+          <value value="113"></value>
+          <value value="114"></value>
+          <value value="115"></value>
+          <value value="116"></value>
+          <value value="117"></value>
+          <value value="118"></value>
+          <value value="119"></value>
+          <value value="120"></value>
+          <value value="121"></value>
+          <value value="122"></value>
+          <value value="123"></value>
+          <value value="124"></value>
+          <value value="125"></value>
+          <value value="126"></value>
+          <value value="127"></value>
+          <value value="128"></value>
+          <value value="129"></value>
+          <value value="130"></value>
+          <value value="131"></value>
+          <value value="132"></value>
+          <value value="133"></value>
+          <value value="134"></value>
+          <value value="135"></value>
+          <value value="136"></value>
+          <value value="137"></value>
+          <value value="138"></value>
+          <value value="139"></value>
+          <value value="140"></value>
+          <value value="141"></value>
+          <value value="142"></value>
+          <value value="143"></value>
+          <value value="144"></value>
+          <value value="145"></value>
+          <value value="146"></value>
+          <value value="147"></value>
+          <value value="148"></value>
+          <value value="149"></value>
+          <value value="150"></value>
+          <value value="151"></value>
+          <value value="152"></value>
+          <value value="153"></value>
+          <value value="154"></value>
+          <value value="155"></value>
+          <value value="156"></value>
+          <value value="157"></value>
+          <value value="158"></value>
+          <value value="159"></value>
+          <value value="160"></value>
+          <value value="161"></value>
+          <value value="162"></value>
+          <value value="163"></value>
+          <value value="164"></value>
+          <value value="165"></value>
+          <value value="166"></value>
+          <value value="167"></value>
+          <value value="168"></value>
+          <value value="169"></value>
+          <value value="170"></value>
+          <value value="171"></value>
+          <value value="172"></value>
+          <value value="173"></value>
+          <value value="174"></value>
+          <value value="175"></value>
+          <value value="176"></value>
+          <value value="177"></value>
+          <value value="178"></value>
+          <value value="179"></value>
+          <value value="180"></value>
+          <value value="181"></value>
+          <value value="182"></value>
+          <value value="183"></value>
+          <value value="184"></value>
+          <value value="185"></value>
+          <value value="186"></value>
+          <value value="187"></value>
+          <value value="188"></value>
+          <value value="189"></value>
+          <value value="190"></value>
+          <value value="191"></value>
+          <value value="192"></value>
+          <value value="193"></value>
+          <value value="194"></value>
+          <value value="195"></value>
+          <value value="196"></value>
+          <value value="197"></value>
+          <value value="198"></value>
+          <value value="199"></value>
+          <value value="200"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="E3-holdout-retuned" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>fit-correlation</metric>
+        <metric>fit-l2</metric>
+        <metric>count households</metric>
+        <metric>extinction-year</metric>
+        <metric>peak1-capacity</metric>
+        <metric>peak2-capacity</metric>
+        <metric>capacity-peak-ratio</metric>
+        <metric>peak1-population</metric>
+        <metric>peak2-population</metric>
+        <metric>population-peak-ratio</metric>
+        <metric>sim-series</metric>
+        <metric>hist-series</metric>
+        <metric>cap-series</metric>
+        <metric>mean-farmed-quality</metric>
+        <metric>dead-cells</metric>
+        <metric>soil-1130</metric>
+        <metric>soil-1260</metric>
+        <metric>max [cumulative-farm-years] of patches</metric>
+        <metric>soil-series</metric>
+        <metric>mean-crowding</metric>
+        <metric>max-crowding</metric>
+        <metric>peak1-crowded</metric>
+        <metric>peak2-crowded</metric>
+        <metric>crowded-peak-ratio</metric>
+        <metric>capc-series</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="fertility">
+          <value value="0.155"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="death-age">
+          <value value="38"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="fertility-ends-age">
+          <value value="34"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-variance">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="historic-view?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="map-view">
+          <value value="&quot;zones&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="uplands-fix?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="setup-yield-fix?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="soil-heterogeneity">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="depletion-rate">
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="recovery-rate">
+          <value value="0.001"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="degradation-factor">
+          <value value="2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="crowding-limit">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="intensification-return">
+          <value value="0.5"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-adjustment">
+          <value value="0.56"></value>
+          <value value="0.58"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="run-seed">
+          <value value="101"></value>
+          <value value="102"></value>
+          <value value="103"></value>
+          <value value="104"></value>
+          <value value="105"></value>
+          <value value="106"></value>
+          <value value="107"></value>
+          <value value="108"></value>
+          <value value="109"></value>
+          <value value="110"></value>
+          <value value="111"></value>
+          <value value="112"></value>
+          <value value="113"></value>
+          <value value="114"></value>
+          <value value="115"></value>
+          <value value="116"></value>
+          <value value="117"></value>
+          <value value="118"></value>
+          <value value="119"></value>
+          <value value="120"></value>
+          <value value="121"></value>
+          <value value="122"></value>
+          <value value="123"></value>
+          <value value="124"></value>
+          <value value="125"></value>
+          <value value="126"></value>
+          <value value="127"></value>
+          <value value="128"></value>
+          <value value="129"></value>
+          <value value="130"></value>
+          <value value="131"></value>
+          <value value="132"></value>
+          <value value="133"></value>
+          <value value="134"></value>
+          <value value="135"></value>
+          <value value="136"></value>
+          <value value="137"></value>
+          <value value="138"></value>
+          <value value="139"></value>
+          <value value="140"></value>
+          <value value="141"></value>
+          <value value="142"></value>
+          <value value="143"></value>
+          <value value="144"></value>
+          <value value="145"></value>
+          <value value="146"></value>
+          <value value="147"></value>
+          <value value="148"></value>
+          <value value="149"></value>
+          <value value="150"></value>
+          <value value="151"></value>
+          <value value="152"></value>
+          <value value="153"></value>
+          <value value="154"></value>
+          <value value="155"></value>
+          <value value="156"></value>
+          <value value="157"></value>
+          <value value="158"></value>
+          <value value="159"></value>
+          <value value="160"></value>
+          <value value="161"></value>
+          <value value="162"></value>
+          <value value="163"></value>
+          <value value="164"></value>
+          <value value="165"></value>
+          <value value="166"></value>
+          <value value="167"></value>
+          <value value="168"></value>
+          <value value="169"></value>
+          <value value="170"></value>
+          <value value="171"></value>
+          <value value="172"></value>
+          <value value="173"></value>
+          <value value="174"></value>
+          <value value="175"></value>
+          <value value="176"></value>
+          <value value="177"></value>
+          <value value="178"></value>
+          <value value="179"></value>
+          <value value="180"></value>
+          <value value="181"></value>
+          <value value="182"></value>
+          <value value="183"></value>
+          <value value="184"></value>
+          <value value="185"></value>
+          <value value="186"></value>
+          <value value="187"></value>
+          <value value="188"></value>
+          <value value="189"></value>
+          <value value="190"></value>
+          <value value="191"></value>
+          <value value="192"></value>
+          <value value="193"></value>
+          <value value="194"></value>
+          <value value="195"></value>
+          <value value="196"></value>
+          <value value="197"></value>
+          <value value="198"></value>
+          <value value="199"></value>
+          <value value="200"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="E4-crowding-presentation" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>count households</metric>
+        <metric>extinction-year</metric>
+        <metric>peak1-capacity</metric>
+        <metric>peak2-capacity</metric>
+        <metric>peak1-population</metric>
+        <metric>peak2-population</metric>
+        <metric>peak1-crowded</metric>
+        <metric>peak2-crowded</metric>
+        <metric>mean-crowding</metric>
+        <metric>max-crowding</metric>
+        <metric>sim-series</metric>
+        <metric>hist-series</metric>
+        <metric>cap-series</metric>
+        <metric>capc-series</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="fertility">
+          <value value="0.155"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="death-age">
+          <value value="38"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="fertility-ends-age">
+          <value value="34"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-adjustment">
+          <value value="0.54"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="harvest-variance">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="historic-view?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="map-view">
+          <value value="&quot;zones&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="uplands-fix?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="setup-yield-fix?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="soil-heterogeneity">
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="soil-on?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="crowding-on?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="depletion-rate">
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="recovery-rate">
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="degradation-factor">
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="crowding-limit">
+          <value value="1"></value>
+          <value value="2"></value>
+          <value value="3"></value>
+          <value value="4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="intensification-return">
+          <value value="0.5"></value>
+          <value value="0.8"></value>
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="run-seed">
+          <value value="1"></value>
+          <value value="2"></value>
+          <value value="3"></value>
+          <value value="4"></value>
+          <value value="5"></value>
+          <value value="6"></value>
+          <value value="7"></value>
+          <value value="8"></value>
+          <value value="9"></value>
+          <value value="10"></value>
+          <value value="11"></value>
+          <value value="12"></value>
+          <value value="13"></value>
+          <value value="14"></value>
+          <value value="15"></value>
+          <value value="16"></value>
+          <value value="17"></value>
+          <value value="18"></value>
+          <value value="19"></value>
+          <value value="20"></value>
+          <value value="21"></value>
+          <value value="22"></value>
+          <value value="23"></value>
+          <value value="24"></value>
+          <value value="25"></value>
+          <value value="26"></value>
+          <value value="27"></value>
+          <value value="28"></value>
+          <value value="29"></value>
+          <value value="30"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+  </experiments>
+</model>
