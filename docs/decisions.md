@@ -109,3 +109,9 @@ This follows from D-08 (analysis lives in Python). Points to settle before build
 - The kernel has the Logos Python client loaded and connected to the running project, so a notebook can read experiment results (Parquet) and provenance, and start runs.
 - Notebooks are ordinary `.ipynb` files in the project folder, so they also open in Jupyter or VS Code.
 - Placement: after the Python client exists (Phase 2), in the desktop app (Phase 3). Nothing in Phase 0 or 1 depends on it.
+
+## D-17 Launch commands are built as argument lists — accepted
+
+NetLogo 7.0.4's `netlogo-headless.bat` fails when NetLogo is installed in a folder with a space in its name, such as `C:\Program Files\NetLogo 7.0.4` (Java reports `Could not find or load main class Files\NetLogo`). The script sets `BASE_DIR` with a trailing backslash and passes `-Dnetlogo.docs.dir="%BASE_DIR%"`; the argument then ends in `\"`, which the Windows command-line parser reads as an escaped quote, so the string never closes and the following arguments run together.
+
+Logos never builds a launch command by joining strings or by calling NetLogo's launch scripts. It starts Java directly and passes each argument as a separate list element (`std::process::Command::arg`), as `logos-bridge-client` already does. The fix for NetLogo's script (drop the trailing backslash in that one place) is a candidate upstream PR.
