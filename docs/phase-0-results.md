@@ -8,11 +8,11 @@ Measurements against the criteria in `docs/phase-0-spec.md`. Each entry says whe
 |---|---|---|---|
 | A1 | Bridge starts on NetLogo's bundled runtime from a path with spaces | NetLogo 7.0.4 on Java 17.0.2 (Oracle Corporation) from `C:\Program Files\NetLogo 7.0.4\runtime\bin\java.exe` | Met |
 | A2 | Start to first reporter result, target under 5 s | 2.91 s: handshake 0.21 s, open AA4-Combined 2.70 s, first `workspace.observe` 0.01 s. A second run: 2.95 s. | Met |
-| A3 | AA4 `N3-limit1` metrics match NetLogo's headless BehaviorSpace | Not yet measured | Open |
+| A3 | AA4 `N3-limit1` metrics match NetLogo's headless BehaviorSpace | Linux: 60 runs, 1,500 metric values (25 metrics, including the time-series lists) and every `[step]` count identical to NetLogo 7.0.4's table output. Windows run pending. See "A3 detail". | Met (Linux) |
 | A4 | View frames at 30 fps | Viewer spike on AA4 (320 x 480 view), 30 fps cap: 324 frames received and 324 shown, 28.7 fps over 11.3 s. Bridge with a frame every iteration: 41.1 fps. See "A4 detail" below. | Met |
 | A5 | Agent state at 30 updates/s with 10,000 turtles | Not yet measured | Open |
-| A6 | 8 parallel workspaces match single runs | Two workspaces in one bridge checked (`WorkspaceTest.observingDoesNotChangeTheRun`); 8-way test not yet written | Partial |
-| A7 | `gis` and `nw` examples run | Not yet measured | Open |
+| A6 | 8 parallel workspaces match single runs | Linux: AA4 seeds 1-8, 150 steps, on 8 workspaces in one bridge: identical to the same runs on one workspace. A3 itself ran on 2 parallel workspaces. Windows run and timing pending. | Met (Linux) |
+| A7 | `gis` and `nw` examples run | Linux: `GIS General Examples` (17 procedures: loading shapefiles and rasters, drawing, turtles from points and polygons, coverage, raster sampling, convolution) and `NW General Examples` (generators, centrality, clustering, Louvain, cliques, layouts) run without errors, and two workspaces with the same seed agree on every value read. Comparison with the NetLogo GUI pending. | Met (Linux) |
 | A8 | Primitive table | Not yet implemented | Open |
 | A9 | Legacy `.nlogo` conversion | Not yet implemented | Open |
 | A10 | Bridge exits within 2 s when stdin closes | 62 ms; 42 ms on a second run | Met |
@@ -20,6 +20,14 @@ Measurements against the criteria in `docs/phase-0-spec.md`. Each entry says whe
 | A12 | Observation doesn't change runs | AA4-Combined seed 7, 40 steps, agentset reporters read every step: identical to an unobserved run. With observation on the main RNG the runs diverge (20 vs 17 households at year 840). | Met |
 
 Measured 2026-10-09, Windows, bridge commit on `main` after merge of `phase0/rust-bridge-client`, `cargo test -p logos-bridge-client -- --ignored`.
+
+## A3 detail
+
+`logos-experiment` reads `N3-limit1` from the model file, lists its 60 runs in BehaviorSpace's order, and checks the run numbers and variable values against the reference table before running anything. Each run sets the variables, runs `setup`, runs `go` with `workspace.run` until the model stops itself, and reads the 25 metrics with `workspace.observe`. Numbers are compared exactly after parsing NetLogo's printed form.
+
+- BehaviorSpace counts 551 steps for a run that the bridge counts as 552 iterations: it does not count the final `go` that executed `stop`. The runner reports steps the same way.
+- NetLogo's headless BehaviorSpace runs with plot updates off unless `--update-plots` is given; the bridge runs with them on. For AA4 this makes no difference to any metric. A model whose plot code changes model state or draws random numbers could differ, so the experiment runner should turn plot updates off to match BehaviorSpace (open item for Phase 1).
+- Time on Linux with 2 workers on 2 cores: 293 s for 60 runs.
 
 ## A4 detail
 
@@ -48,6 +56,10 @@ AA4-Combined, `set run-seed 3 setup`, `repeat 60 [ go ]`, run in two separate br
 | Linux, Java 21.0.12 | 860 | 15 | 231 | 654, 23, 71 |
 
 Both processes on each platform agreed, and the two platforms agreed with each other.
+
+## Notes from A3
+
+- `netlogo-headless.bat` in NetLogo 7.0.4 fails when NetLogo is installed in a path with spaces; the reference table was produced by calling Java directly (D-17, corpus/README.md).
 
 ## Spike B: file format and parser
 
