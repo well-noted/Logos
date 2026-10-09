@@ -121,6 +121,8 @@ final class Workspaces {
     void dispatch(String method, Map<String, Object> params, Reply reply) {
         try {
             switch (method) {
+                case "engine.primitives" -> onTaskThread(reply, () -> Primitives.table(params));
+                case "model.convertLegacy" -> onTaskThread(reply, () -> Legacy.convert(params));
                 case "workspace.open" -> open(params, reply, false);
                 case "workspace.openString" -> open(params, reply, true);
                 case "workspace.command" -> {
@@ -180,6 +182,37 @@ final class Workspaces {
     @FunctionalInterface
     private interface Task {
         Object run(Handle h) throws RpcException;
+    }
+
+    /** Work that needs no workspace of its own (engine.primitives, model.convertLegacy). */
+    @FunctionalInterface
+    private interface EngineTask {
+        Object run() throws RpcException;
+    }
+
+    /**
+     * Runs slow engine work (it starts a temporary NetLogo workspace) on its own thread so the
+     * stdin thread keeps reading requests.
+     */
+    private void onTaskThread(Reply reply, EngineTask task) {
+        Thread t = new Thread(() -> {
+            Object result;
+            try {
+                result = task.run();
+            } catch (RpcException e) {
+                reply.error(e);
+                return;
+            } catch (RuntimeException e) {
+                log.println("logos-bridge: internal error");
+                e.printStackTrace(log);
+                reply.error(new RpcException(RpcException.INTERNAL, String.valueOf(e),
+                        Map.of("javaStack", Bridge.stackTrace(e))));
+                return;
+            }
+            reply.ok(result);
+        }, "logos-task");
+        t.setDaemon(true);
+        t.start();
     }
 
     private void onThread(Handle h, Reply reply, Task task) throws RpcException {
@@ -620,14 +653,14 @@ final class Workspaces {
         return new RpcException(RpcException.NO_SUCH_WORKSPACE, "no workspace " + id);
     }
 
-    private static String string(Map<String, Object> params, String name) throws RpcException {
+    static String string(Map<String, Object> params, String name) throws RpcException {
         if (!(params.get(name) instanceof String s)) {
             throw new RpcException(RpcException.INVALID_PARAMS, name + " must be a string");
         }
         return s;
     }
 
-    private static List<String> stringList(Map<String, Object> params, String name)
+    static List<String> stringList(Map<String, Object> params, String name)
             throws RpcException {
         if (!(params.get(name) instanceof List<?> list)) {
             throw new RpcException(RpcException.INVALID_PARAMS, name + " must be a list");

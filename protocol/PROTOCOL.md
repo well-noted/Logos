@@ -80,26 +80,33 @@ If `protocolVersion` differs from the bridge's, the bridge returns error `1006 P
 
 **`engine.primitives`**
 
-Returns the primitive table that `logos-semantic` uses (D-01, D-07).
+Returns the primitive table that `logos-semantic` uses (D-01, D-07): the syntax of every core primitive and of the primitives of the requested extensions, as NetLogo 7.0.4 defines them.
 
 ```
-params: { "extensions": [string] }          // extension names to load first, e.g. ["nw", "table"]
-result: { "netlogoVersion": string,
+params: { "extensions": [string] }          // extensions to load first, e.g. ["nw", "table"]
+result: { "netlogoVersion": string,          // "NetLogo 7.0.4"
           "primitives": [ {
-              "name": string,                  // e.g. "fd", "nw:generate-random"
+              "name": string,                  // lower case: "fd", "nw:generate-random"
               "kind": "command" | "reporter",
-              "args": [ArgType],               // NetLogo's argument types, in order
-              "variadic": { "min": int, "max": int | null, "default": int } | null,
+              "left": ArgType | null,          // the left argument of an infix reporter
+              "args": [ArgType],               // arguments on the right, in order
               "returns": ArgType | null,       // null for commands
+              "defaultArgCount": int,          // NetLogo's Syntax.dfault
+              "minimumArgCount": int,          // NetLogo's Syntax.minimum
+              "variadic": bool,                // takes a variable number of arguments in parentheses
               "precedence": int,
-              "isInfix": bool,
-              "agentClass": string,            // e.g. "OTPL" as NetLogo writes it
+              "isRightAssociative": bool,
+              "agentClass": string,            // e.g. "OTPL", "-T--", as NetLogo writes it
               "blockAgentClass": string | null,
               "introducesContext": bool,
-              "extension": string | null } ] }
+              "extension": string | null } ] } // e.g. "nw"; null for core primitives
+
+ArgType: { "name": string, "mask": int }
 ```
 
-`ArgType` is a string from NetLogo's syntax type names (`"number"`, `"agentset"`, `"command block"`, ...). The exact list is fixed by what NetLogo 7.0.4's `Syntax` class reports; the bridge passes it through without translating.
+`mask` is NetLogo's type bit mask (`org.nlogo.core.Syntax`), which includes the repeatable and optional flags. `name` is NetLogo's own name for the mask (`org.nlogo.core.TypeNames.name`), as its error messages show it, for example `"agent or agentset"` or `"command block (optional)"`. The bridge passes both through without translating.
+
+Core primitives are the names `org.nlogo.parse.TokenMapper` knows, including the internal `__` primitives: 459 in NetLogo 7.0.4. Breed primitives such as `create-<breeds>` are templates in NetLogo and are not listed. Extension primitives are read after a temporary workspace with `extensions [ ... ]` has compiled. An extension NetLogo can't find fails with `-32602` and NetLogo's message. The rows are sorted by name.
 
 **`engine.shutdown`**
 
@@ -213,14 +220,19 @@ result: {}
 
 **`model.convertLegacy`**
 
-Converts a `.nlogo` (or `.nlogo3d`) file to `.nlogox` using NetLogo's own reader and writer (D-06). Never writes to `sourcePath`.
+Converts a `.nlogo` file to `.nlogox` the way NetLogo 7.0.4's GUI does when it opens an older model and the user saves it (D-06), using NetLogo's own reader, auto-converter and writer. Code written for older versions is rewritten by NetLogo's auto-conversion (for example NetLogo 5's `?` in `foreach` becomes `[ ?1 -> ... ]`), and the version is set to `NetLogo 7.0.4`. Never writes to `sourcePath`.
 
 ```
-params: { "sourcePath": string, "outputPath": string }
-result: { "outputPath": string, "warnings": [string] }
+params: { "sourcePath": string, "outputPath": string }   // outputPath must end in .nlogox
+result: { "outputPath": string,
+          "sourceVersion": string,          // the source's version line, e.g. "NetLogo 5.0.3"
+          "warnings": [string] }            // auto-conversion problems; the GUI shows the same
 ```
 
-Fails with `1007 FileExists` if `outputPath` exists.
+- Fails with `1007 FileExists` if `outputPath` exists, including one created while the conversion runs; the file is created with create-new semantics.
+- Fails with `1004 ModelOpenFailed` if the source can't be read or isn't a NetLogo model.
+- `.nlogo3d` files are not supported yet (`-32602`).
+- When auto-conversion fails for part of the model, the GUI shows the errors and, if the user continues, opens the partly converted model. This method does the same: it writes the partly converted model and returns the errors as `warnings`.
 
 ### 5.4 Notifications (bridge to client)
 
