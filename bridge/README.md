@@ -6,7 +6,7 @@ License: GPL-3.0-or-later (`LICENSE`). This folder is the only part of Logos tha
 
 ## Build and test
 
-Needs JDK 17 or newer on `JAVA_HOME`. The Gradle wrapper downloads Gradle itself on first use.
+Needs JDK 17 or newer on `JAVA_HOME` and NetLogo 7.0.4 installed. The build compiles against the jars in the NetLogo install and the tests run models on it. Gradle looks for NetLogo in `-PnetlogoHome=...`, then `LOGOS_NETLOGO_HOME`, then the default install folder. The Gradle wrapper downloads Gradle itself on first use.
 
 ```
 cd bridge
@@ -15,7 +15,7 @@ cd bridge
 .\gradlew.bat jar        # builds build\libs\logos-bridge-0.0.0.jar
 ```
 
-The unit tests don't need NetLogo. Tests that run against an installed NetLogo arrive with the workspace methods.
+`WorkspaceTest` opens `corpus/own/aa4-combined/AA4-Combined.nlogox` and small models built in the test, and drives them through the protocol the same way the Rust client will.
 
 ## Running by hand
 
@@ -38,3 +38,5 @@ It then waits for framed messages on stdin, so there is nothing useful to type i
 | `Frames.java` | Frame encoding (PROTOCOL.md section 2). |
 | `Json.java` | Dependency-free JSON reader and writer with exact double formatting. |
 | `RpcException.java` | Error codes (PROTOCOL.md section 8). |
+| `Workspaces.java` | Workspace registry, one job thread per workspace, `workspace.*` methods. |
+| `Values.java` | NetLogo values to JSON (PROTOCOL.md section 7). |

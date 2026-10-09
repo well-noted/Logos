@@ -83,6 +83,8 @@ NetLogo avoids this in two ways, and the bridge copies both:
 
 The bridge evaluates every observation (monitors, metrics, inspector reads, live-view state queries) with a job owner holding `mainRNG.clone`, matching BehaviorSpace. `workspace.command` is the only path that is allowed to advance the main generator. A conformance test checks that a run with observation every tick gives the same results as a run with no observation.
 
+Confirmed on NetLogo 7.0.4 with AA4-Combined (`run-seed` 7): reading `mean [age] of households`, `one-of households` and `n-of` every step through the main generator changes the population at year 840 from 20 households to 17. With the cloned generator, the observed and unobserved runs match exactly. `WorkspaceTest.observingDoesNotChangeTheRun` in the bridge guards this.
+
 ## D-15 Primary test model: AA4-Combined — accepted
 
 Thomas's modified Artificial Anasazi model (from Stonedahl & Wilensky 2010, Models Library) is the main model for Phase 0 and the first entry in the conformance corpus. It lives at `corpus/own/aa4-combined/` with the `data/` files it reads at setup, copied from the 7.0.4 Models Library.
