@@ -11,9 +11,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use logos_protocol::{
-    CommandParams, HelloParams, HelloResult, Incoming, Kind, ObserveParams, ObserveResult,
-    OpenParams, OpenResult, PROTOCOL_VERSION, Request, RpcError, WorkspaceId, WorkspaceParams,
-    read_frame, write_frame,
+    CommandParams, DataFrame, HelloParams, HelloResult, Incoming, Kind, ObserveParams,
+    ObserveResult, OpenParams, OpenResult, PROTOCOL_VERSION, Request, RpcError, RunFinished,
+    RunParams, RunStreams, WorkspaceId, WorkspaceParams, read_frame, write_frame,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -63,6 +63,9 @@ pub struct Bridge {
     pending: Pending,
     next_id: AtomicU64,
     notifications: Mutex<Receiver<Notification>>,
+    /// Notifications taken off the channel while looking for a different one.
+    held: Mutex<VecDeque<Notification>>,
+    data_frames: Mutex<Receiver<DataFrame>>,
     stderr: Arc<Mutex<VecDeque<String>>>,
     threads: Vec<JoinHandle<()>>,
     hello: HelloResult,
@@ -87,12 +90,13 @@ impl Bridge {
         let pending: Pending = Arc::default();
         let stderr: Arc<Mutex<VecDeque<String>>> = Arc::default();
         let (notify_tx, notify_rx) = mpsc::channel();
+        let (data_tx, data_rx) = mpsc::channel();
 
         let reader = {
             let pending = Arc::clone(&pending);
             std::thread::Builder::new()
                 .name("logos-bridge-reader".into())
-                .spawn(move || read_loop(stdout, pending, notify_tx))
+                .spawn(move || read_loop(stdout, pending, notify_tx, data_tx))
                 .expect("spawn reader thread")
         };
         let stderr_reader = {
@@ -118,6 +122,8 @@ impl Bridge {
             pending,
             next_id: AtomicU64::new(1),
             notifications: Mutex::new(notify_rx),
+            held: Mutex::new(VecDeque::new()),
+            data_frames: Mutex::new(data_rx),
             stderr,
             threads: vec![reader, stderr_reader],
             hello: HelloResult::default(),
@@ -283,9 +289,114 @@ impl Bridge {
         Ok(())
     }
 
+    /// Starts running `source` repeatedly (PROTOCOL.md, workspace.run). Returns the run id.
+    /// Progress arrives as notifications and data frames; the run ends with `run.finished`.
+    pub fn run(
+        &self,
+        workspace: WorkspaceId,
+        source: &str,
+        repeat: Option<u64>,
+        stream: &RunStreams,
+    ) -> Result<u64, ClientError> {
+        let v = self.call(
+            "workspace.run",
+            RunParams {
+                workspace,
+                source,
+                repeat,
+                stream,
+            },
+            DEFAULT_TIMEOUT,
+        )?;
+        v.get("run")
+            .and_then(Json::as_u64)
+            .ok_or_else(|| ClientError::BadResponse {
+                method: "workspace.run".into(),
+                detail: v.to_string(),
+            })
+    }
+
+    /// Asks a running workspace to stop after its current iteration.
+    pub fn stop(&self, workspace: WorkspaceId) -> Result<(), ClientError> {
+        self.call(
+            "workspace.stop",
+            WorkspaceParams { workspace },
+            DEFAULT_TIMEOUT,
+        )?;
+        Ok(())
+    }
+
     /// Takes the next notification, if one has arrived.
     pub fn try_notification(&self) -> Option<Notification> {
+        if let Some(n) = self.held.lock().unwrap().pop_front() {
+            return Some(n);
+        }
         self.notifications.lock().unwrap().try_recv().ok()
+    }
+
+    /// Waits up to `timeout` for the next notification.
+    pub fn next_notification(&self, timeout: Duration) -> Option<Notification> {
+        if let Some(n) = self.held.lock().unwrap().pop_front() {
+            return Some(n);
+        }
+        self.notifications
+            .lock()
+            .unwrap()
+            .recv_timeout(timeout)
+            .ok()
+    }
+
+    /// Waits for `run.finished` for this run. Other notifications are kept for
+    /// `try_notification` and `next_notification`.
+    pub fn wait_run_finished(
+        &self,
+        workspace: WorkspaceId,
+        run: u64,
+        timeout: Duration,
+    ) -> Result<RunFinished, ClientError> {
+        let matches = |n: &Notification| {
+            n.method == "run.finished"
+                && n.params.get("workspace").and_then(Json::as_u64) == Some(workspace.0)
+                && n.params.get("run").and_then(Json::as_u64) == Some(run)
+        };
+        let parse = |n: Notification| {
+            serde_json::from_value::<RunFinished>(n.params).map_err(|e| ClientError::BadResponse {
+                method: "run.finished".into(),
+                detail: e.to_string(),
+            })
+        };
+        {
+            let mut held = self.held.lock().unwrap();
+            if let Some(i) = held.iter().position(matches) {
+                return parse(held.remove(i).unwrap());
+            }
+        }
+        let deadline = Instant::now() + timeout;
+        let rx = self.notifications.lock().unwrap();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(n) if matches(&n) => return parse(n),
+                Ok(n) => self.held.lock().unwrap().push_back(n),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(ClientError::Timeout {
+                        method: "run.finished".into(),
+                        timeout,
+                    });
+                }
+                Err(RecvTimeoutError::Disconnected) => return Err(self.closed()),
+            }
+        }
+    }
+
+    /// Takes the next binary data frame (for example a view frame), if one has arrived.
+    pub fn try_data_frame(&self) -> Option<DataFrame> {
+        self.data_frames.lock().unwrap().try_recv().ok()
+    }
+
+    /// Waits up to `timeout` for the next binary data frame.
+    pub fn next_data_frame(&self, timeout: Duration) -> Option<DataFrame> {
+        self.data_frames.lock().unwrap().recv_timeout(timeout).ok()
     }
 
     // ------------------------------------------------------------ ending
@@ -357,12 +468,20 @@ impl Drop for Bridge {
 }
 
 /// Reads frames from the bridge's stdout and routes them until the stream ends.
-fn read_loop(stdout: std::process::ChildStdout, pending: Pending, notify: Sender<Notification>) {
+fn read_loop(
+    stdout: std::process::ChildStdout,
+    pending: Pending,
+    notify: Sender<Notification>,
+    data: Sender<DataFrame>,
+) {
     let mut reader = BufReader::with_capacity(1 << 16, stdout);
     // Ends on a clean end of stream or on a broken one; either way the process is gone.
     while let Ok(Some(frame)) = read_frame(&mut reader) {
-        if frame.kind != Kind::Json {
-            // Binary frames (view frames, agent state) arrive with workspace.run, later.
+        if frame.kind == Kind::Binary {
+            // A frame that doesn't decode is a bridge bug; skip it rather than stop reading.
+            if let Ok(f) = DataFrame::decode(&frame.payload) {
+                let _ = data.send(f);
+            }
             continue;
         }
         match Incoming::parse(&frame.payload) {
