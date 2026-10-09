@@ -177,10 +177,10 @@ result: { "run": int }
 ```
 
 - `view`: send a view frame (section 6.1) after an iteration when at least `everyTicks` ticks have passed since the last frame and at least `1/maxFps` seconds have passed. Frames are rendered on the job thread between iterations. The first frame (sequence 0) shows the state before the first iteration, and a final frame is always sent when the run ends, so the client sees the end state. `everyTicks` defaults to 1 and `maxFps` to 30.
-- `agents`: send an agent-state frame (section 6.2) under the same rule. Not implemented yet; the bridge rejects it with `-32602`.
+- `agents`: send an agent-state frame (section 6.2) under the same rule, with the same first and final frames.
 - `observe`: send a `run.observed` notification every `everyTicks` ticks, with values computed as in `workspace.observe`.
 
-For models that don't use ticks, "ticks passed" counts iterations instead.
+For models that don't use ticks, "ticks passed" counts iterations instead. View frames and agent frames of one run each have their own sequence numbers, starting at 0.
 
 The command is compiled as `source` followed by NetLogo's `__experimentstepend`, the same way BehaviorSpace compiles its go commands (`lab/Worker.scala` at `v7.0.4`). That is how a `stop` at the top level of the procedure is detected. Each iteration runs on the model's main random number generator, so a run gives the same results as the same commands sent through `workspace.command`. A compile error is returned as the response, and no run starts. The response `{ "run": int }` is sent once the command has compiled, before the first iteration.
 
@@ -241,7 +241,7 @@ A binary frame (`kind = 0x02`) starts with a common header. All integers are lit
 | 1 | `type`: `0x01` = view frame, `0x02` = agent state |
 | 4 | `workspace` (u32) |
 | 4 | `run` (u32) |
-| 8 | `sequence` (u64), increasing per run starting at 0 |
+| 8 | `sequence` (u64), increasing per run and frame type, starting at 0 |
 | 8 | `ticks` (f64); NaN when ticks have not been reset |
 
 ### 6.1 View frame (`type = 0x01`)
@@ -265,7 +265,7 @@ Phase 0 layout, for the A-state throughput measurement. It will change in Phase 
 | 4 | `maxPxcor` (i32) |
 | 4 | `minPycor` (i32) |
 | 4 | `maxPycor` (i32) |
-| `patchCount × 4` | patch colors as RGBA, row-major from the top row (`maxPycor`) |
+| `patchCount × 4` | patch colors as RGBA, row by row from the top-left patch (`minPxcor`, `maxPycor`). Alpha is always 255: NetLogo draws patches opaque. |
 | 4 | `turtleCount` (u32) |
 | then one column after another, each `turtleCount` long: | |
 | `× 8` | `who` (f64) |
@@ -274,11 +274,13 @@ Phase 0 layout, for the A-state throughput measurement. It will change in Phase 
 | `× 8` | `heading` (f64) |
 | `× 4` | `color` as RGBA |
 | `× 8` | `size` (f64) |
-| `× 2` | `shapeIndex` (u16), index into the model's turtle shape list |
+| `× 2` | `shapeIndex` (u16), index into the model's turtle shapes in NetLogo's shape list order: `default` first, then the others sorted by name |
 | `× 2` | `breedIndex` (u16), 0 = `turtles`, then breeds in declaration order |
 | `× 1` | `hidden` (u8, 0 or 1) |
 
-Agent state is read on the job thread between iterations. Reading it does not use the random number generator: turtles are read in `who` order, not through an agentset iteration.
+Agent state is read on the job thread between iterations. Reading it does not use the random number generator: patch colors come from the array NetLogo's renderer uses (`World.patchColors`), and turtles are read in `who` order with `TreeAgentSet.iterator`, not with a shuffling agentset iteration.
+
+Size: 25 (common header) + 20 + 4 × patches + 4 + 49 × turtles bytes. With 10,201 patches and 10,000 turtles, 530,853 bytes (518 KiB).
 
 ## 7. Values
 
