@@ -74,8 +74,7 @@ class BridgeTest {
         Map<String, Object> result = s.result(0);
         assertEquals(0L, result.get("protocolVersion"));
         assertEquals(System.getProperty("java.version"), result.get("javaVersion"));
-        assertTrue(result.containsKey("netlogoVersion"));
-        assertNull(result.get("netlogoVersion"), "NetLogo is not on the unit-test classpath");
+        assertEquals(System.getProperty("logos.netlogoVersion"), result.get("netlogoVersion"));
         assertTrue(s.log().contains("stdin closed"));
     }
 
