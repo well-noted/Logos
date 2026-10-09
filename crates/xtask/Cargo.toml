@@ -1,0 +1,19 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Build and repository automation for Logos (cargo xtask ...)"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+toml = "0.8"
+ureq = "3"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

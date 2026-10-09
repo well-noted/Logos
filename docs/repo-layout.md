@@ -7,7 +7,7 @@ This is a proposal. Nothing here is built yet. The layout is designed so that an
 ```
 logos/
 ├── Cargo.toml                 Rust workspace root
-├── rust-toolchain.toml        pins the Rust version (stable, MSVC target on Windows)
+├── rust-toolchain.toml        selects the stable channel with rustfmt and clippy
 ├── LICENSE-MIT
 ├── LICENSE-APACHE
 ├── README.md
@@ -59,7 +59,7 @@ logos/
 
 | Tool | Version | Used for |
 |---|---|---|
-| Rust (rustup) | stable, pinned in `rust-toolchain.toml` | everything under `crates/` |
+| Rust (rustup) | stable; minimum 1.97 (`rust-version` in `Cargo.toml`) | everything under `crates/` |
 | Visual Studio Build Tools | 2022, "Desktop development with C++" workload | the MSVC linker Rust needs on Windows |
 | JDK | 17 (Eclipse Temurin) | building the bridge with `--release 17`; NetLogo 7.0.4 ships a Java 17.0.2 runtime (D-05) |
 | Gradle | through the committed wrapper | building the bridge; no global install |
