@@ -12,9 +12,11 @@ import java.util.Map;
 /**
  * Reads requests from the client, dispatches them, and writes responses (PROTOCOL.md).
  *
- * <p>{@code engine.*} methods run on the thread that reads stdin. {@code workspace.*} methods are
- * handed to {@link Workspaces}, which runs them on each workspace's own thread and replies from
- * there, so responses for different workspaces can arrive in any order.
+ * <p>{@code engine.hello} and {@code engine.shutdown} run on the thread that reads stdin.
+ * {@code workspace.*} methods are handed to {@link Workspaces}, which runs them on each
+ * workspace's own thread and replies from there, so responses for different workspaces can
+ * arrive in any order. {@code engine.primitives} and {@code model.convertLegacy} start a
+ * temporary NetLogo workspace and run on a thread of their own.
  */
 public final class Bridge {
     /** Protocol version implemented by this bridge (PROTOCOL.md header). */
@@ -136,7 +138,8 @@ public final class Bridge {
             } else {
                 throw new RpcException(RpcException.INVALID_PARAMS, "params must be an object");
             }
-            if (method.startsWith("workspace.")) {
+            if (method.startsWith("workspace.") || method.equals("engine.primitives")
+                    || method.equals("model.convertLegacy")) {
                 if (!initialized) {
                     throw new RpcException(RpcException.NOT_INITIALIZED,
                             "the first request must be engine.hello");
