@@ -40,3 +40,4 @@ It then waits for framed messages on stdin, so there is nothing useful to type i
 | `RpcException.java` | Error codes (PROTOCOL.md section 8). |
 | `Workspaces.java` | Workspace registry, one job thread per workspace, `workspace.*` methods. |
 | `Values.java` | NetLogo values to JSON (PROTOCOL.md section 7). |
+| `ViewFrame.java` | Encodes NetLogo's rendered view as a binary view frame (PROTOCOL.md section 6.1). |

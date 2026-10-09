@@ -1,12 +1,14 @@
 //! The Logos bridge protocol, Rust side. The specification is `protocol/PROTOCOL.md`; this
 //! crate and `bridge/` must change together with it.
 
+pub mod binary;
 pub mod frame;
 pub mod value;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
+pub use binary::{DataFrame, DataFrameError, ViewFrame};
 pub use frame::{Frame, FrameError, Kind, read_frame, write_frame};
 pub use value::NlValue;
 
@@ -188,6 +190,63 @@ pub struct WorkspaceParams {
     pub workspace: WorkspaceId,
 }
 
+/// Stream settings for `workspace.run` (PROTOCOL.md section 5.2).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RunStreams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<StreamRate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observe: Option<ObserveStream>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamRate {
+    pub every_ticks: u64,
+    pub max_fps: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObserveStream {
+    pub reporters: Vec<String>,
+    pub every_ticks: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunParams<'a> {
+    pub workspace: WorkspaceId,
+    pub source: &'a str,
+    pub repeat: Option<u64>,
+    pub stream: &'a RunStreams,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunEnd {
+    /// The command executed `stop`.
+    Stopped,
+    /// `repeat` iterations finished.
+    Completed,
+    /// Stopped by the client, dispose or shutdown.
+    Halted,
+    /// A runtime error.
+    Error,
+}
+
+/// The `run.finished` notification.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunFinished {
+    pub workspace: WorkspaceId,
+    pub run: u64,
+    pub reason: RunEnd,
+    pub iterations: u64,
+    pub ticks: Option<f64>,
+    pub elapsed_millis: f64,
+    pub error: Option<Json>,
+}
+
 /// Result of `workspace.observe`. Each entry is a value or the error for that reporter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObserveResult {
@@ -281,6 +340,34 @@ mod tests {
 
         assert!(Incoming::parse(b"[]").is_err());
         assert!(Incoming::parse(br#"{"jsonrpc":"2.0","id":1}"#).is_err());
+    }
+
+    #[test]
+    fn run_params_and_finished_notification() {
+        let streams = RunStreams {
+            view: Some(StreamRate {
+                every_ticks: 1,
+                max_fps: 30.0,
+            }),
+            observe: None,
+        };
+        let p = RunParams {
+            workspace: WorkspaceId(2),
+            source: "go",
+            repeat: None,
+            stream: &streams,
+        };
+        assert_eq!(
+            serde_json::to_value(&p).unwrap(),
+            json!({"workspace":2,"source":"go","repeat":null,
+                   "stream":{"view":{"everyTicks":1,"maxFps":30.0}}})
+        );
+        let f: RunFinished = serde_json::from_value(json!({"workspace":2,"run":1,
+            "reason":"stopped","iterations":551,"ticks":551.0,"elapsedMillis":9000.5,
+            "error":null}))
+        .unwrap();
+        assert_eq!(f.reason, RunEnd::Stopped);
+        assert_eq!(f.iterations, 551);
     }
 
     #[test]
