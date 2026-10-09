@@ -70,6 +70,14 @@ $NL = "C:\Program Files\NetLogo 7.0.4"
 
 Headless BehaviorSpace does not update plots unless `--update-plots` is given; this file was produced without it.
 
+## Legacy conversion (A9)
+
+`legacy/` holds `.nlogo` files and NetLogo 7.0.4's GUI conversion of each, used by `a9_conversion_matches_the_netlogo_gui` (`crates/logos-bridge-client/tests/model_tools.rs`). The test pairs `<name>.nlogo` with `<name>-gui-7.0.4.nlogox`. The folder is ignored by git until each file's license is recorded; for now it exists only on the development machine.
+
+To make a GUI conversion: open the `.nlogo` in NetLogo 7.0.4 with File > Open, accept the conversion, choose **Skip** when asked whether to convert widgets to the new sizes (D-18), and save with File > Save As under the name above. Don't run the model first.
+
+Current files: `lhv.nlogo` (Long House Valley, NetLogo 5.0.3; license not yet known) and `ants-benchmark.nlogo` (`test/fileformat/Ants Benchmark.nlogo` from the NetLogo repository at `v7.0.4`, NetLogo 6.0-M4; BSD license in its info tab). `*-resized.nlogox` files are GUI conversions with "Resize and adjust positions", kept for comparison.
+
 ## Rules
 
 - Files under `corpus/` are test fixtures. Don't edit them; add a new entry instead. `.gitattributes` stops git from changing their line endings.
