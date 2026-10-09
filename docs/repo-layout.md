@@ -134,6 +134,17 @@ cargo xtask spike-view <model.nlogox>   run the Phase 0 viewer
 
 Plain `cargo build` and `cargo test` keep working for Rust-only changes.
 
+Until `xtask build` and `xtask test --engine` exist, the engine tests run like this:
+
+```
+cd bridge
+.\gradlew.bat test jar        # bridge unit and engine tests, then build the jar
+cd ..
+cargo test -p logos-bridge-client -- --ignored --test-threads=1
+```
+
+The Rust engine tests start the bridge on NetLogo's bundled Java runtime. Set `LOGOS_JAVA` to use a different Java, and `LOGOS_NETLOGO_HOME` if NetLogo is not in the default folder.
+
 ## First-time setup on Windows
 
 1. Install Rust with rustup and accept the MSVC toolchain. Install Visual Studio Build Tools 2022 with the C++ workload if rustup asks for it.
