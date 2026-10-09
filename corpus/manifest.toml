@@ -1,0 +1,62 @@
+# Conformance and round-trip corpus. Format: corpus/README.md.
+# Phase 0 sets (docs/phase-0-spec.md): C1 Models Library, C2 NetLogo repository
+# test files, C3 Thomas's models, C4 CoMSES sample.
+
+version = 1
+
+# --- C3: Thomas's models -------------------------------------------------------
+
+[[model]]
+id = "aa4-combined"
+set = "C3"
+source = "repo"
+path = "own/aa4-combined/AA4-Combined.nlogox"
+sha256 = "d01ec708b88b5b9257f37bcb82048dee93c2600e1b7821cb8a36021bb1002ae0"
+license = "CC-BY-NC-SA-3.0"
+tags = ["primary", "file-io", "behaviorspace", "seeded"]
+notes = "Primary Phase 0 model (D-15). Reads data/*.txt during setup."
+
+# --- C1: NetLogo 7.0.4 Models Library ------------------------------------------
+
+[[model]]
+id = "nl704.gis-general-examples"
+set = "C1"
+source = "netlogo-install"
+netlogo = "7.0.4"
+path = "models/Code Examples/Extensions Examples/gis/GIS General Examples.nlogox"
+sha256 = "eb7880d4eff9dca3f1d82fb3122877fb439262e115720663de72f3f74528c1ea"
+license = "Models Library (see Info tab)"
+tags = ["gis", "extension"]
+notes = "A7 gis check."
+
+[[model]]
+id = "nl704.nw-general-examples"
+set = "C1"
+source = "netlogo-install"
+netlogo = "7.0.4"
+path = "models/Code Examples/Extensions Examples/nw/NW General Examples.nlogox"
+sha256 = "9c80d9fa4d5d4da96224e65cd707639267da3f6494309d9d45b758164d2703db"
+license = "Models Library (see Info tab)"
+tags = ["nw", "extension"]
+notes = "A7 nw check."
+
+[[model]]
+id = "nl704.wolf-sheep-predation"
+set = "C1"
+source = "netlogo-install"
+netlogo = "7.0.4"
+path = "models/Sample Models/Biology/Wolf Sheep Predation.nlogox"
+sha256 = "83bccf3161787b775b4dda7bdadbedde84c73c318926786b796d519cc4dbe15c"
+license = "Models Library (see Info tab)"
+tags = ["throughput"]
+notes = "A5 agent-state throughput test with raised initial populations."
+
+[[collection]]
+id = "nl704.models-library"
+set = "C1"
+source = "netlogo-install"
+netlogo = "7.0.4"
+root = "models"
+extensions = ["nlogox"]
+license = "various (see each model's Info tab)"
+notes = "Every .nlogox in the Models Library, for the B1-B7 round-trip and parser checks."
