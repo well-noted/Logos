@@ -100,6 +100,53 @@ final class TestClient implements AutoCloseable {
         return (Map<String, Object>) response.get("error");
     }
 
+    /** Waits for the next notification with this method, keeping other messages for later. */
+    Map<String, Object> awaitNotification(String method) throws Exception {
+        for (int i = 0; i < unclaimed.size(); i++) {
+            if (method.equals(unclaimed.get(i).get("method"))) {
+                return params(unclaimed.remove(i));
+            }
+        }
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS);
+        while (true) {
+            long left = deadline - System.nanoTime();
+            Map<String, Object> msg = fromBridge.messages.poll(left, TimeUnit.NANOSECONDS);
+            if (msg == null) {
+                throw new AssertionError("no " + method + " notification");
+            }
+            if (method.equals(msg.get("method")) && !msg.containsKey("id")) {
+                return params(msg);
+            }
+            unclaimed.add(msg);
+        }
+    }
+
+    /** All notifications with this method received so far, in order (removes them). */
+    List<Map<String, Object>> takeNotifications(String method) {
+        fromBridge.messages.drainTo(unclaimed);
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (int i = 0; i < unclaimed.size(); ) {
+            if (method.equals(unclaimed.get(i).get("method"))) {
+                out.add(params(unclaimed.remove(i)));
+            } else {
+                i++;
+            }
+        }
+        return out;
+    }
+
+    /** Binary frames received so far (removes them). */
+    List<byte[]> takeBinaryFrames() {
+        List<byte[]> out = new ArrayList<>();
+        fromBridge.binary.drainTo(out);
+        return out;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> params(Map<String, Object> notification) {
+        return (Map<String, Object>) notification.get("params");
+    }
+
     /** Closes stdin and waits for the bridge to exit. Returns the exit code. */
     int closeAndWait(long millis) throws InterruptedException {
         toBridge.offer(null);
@@ -160,6 +207,7 @@ final class TestClient implements AutoCloseable {
     /** An OutputStream that decodes complete frames into JSON messages as they arrive. */
     private static final class FrameCollector extends OutputStream {
         final BlockingQueue<Map<String, Object>> messages = new LinkedBlockingQueue<>();
+        final BlockingQueue<byte[]> binary = new LinkedBlockingQueue<>();
         private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
 
         @Override
@@ -193,6 +241,8 @@ final class TestClient implements AutoCloseable {
                             new ByteArrayInputStream(all, consumed, 4 + (int) length));
                     if (f.kind() == Frames.KIND_JSON) {
                         messages.add((Map<String, Object>) Json.parse(f.text()));
+                    } else {
+                        binary.add(f.payload());
                     }
                 } catch (IOException | Json.ParseException e) {
                     throw new IllegalStateException(e);
