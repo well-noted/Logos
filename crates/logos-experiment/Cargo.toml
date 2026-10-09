@@ -1,0 +1,13 @@
+[package]
+name = "logos-experiment"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "BehaviorSpace experiments: read them from .nlogox, run them through the bridge, compare with NetLogo's table output"
+
+[dependencies]
+logos-bridge-client = { path = "../logos-bridge-client" }
+quick-xml = "0.38"
+thiserror = "2"
