@@ -23,6 +23,20 @@ pub struct BridgeConfig {
     pub java: Option<PathBuf>,
     /// Extra JVM options, added after the defaults.
     pub extra_jvm_args: Vec<String>,
+    /// Environment variables for the bridge process, on top of the inherited environment:
+    /// the project's secrets (Part K). NetLogo's `py` extension passes them on to Python.
+    pub env: Vec<(String, EnvValue)>,
+}
+
+/// An environment variable value for the bridge. `Debug` never prints it, so a logged
+/// configuration doesn't leak secrets.
+#[derive(Clone)]
+pub struct EnvValue(pub String);
+
+impl std::fmt::Debug for EnvValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[hidden]")
+    }
 }
 
 impl BridgeConfig {
@@ -33,6 +47,7 @@ impl BridgeConfig {
             bridge_jar,
             java: std::env::var_os(JAVA_ENV).map(PathBuf::from),
             extra_jvm_args: Vec::new(),
+            env: Vec::new(),
         }
     }
 
@@ -84,6 +99,9 @@ impl BridgeConfig {
             .arg(classpath)
             .arg("org.logos.bridge.Main")
             .current_dir(&self.netlogo_home);
+        for (name, value) in &self.env {
+            cmd.env(name, &value.0);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -205,6 +223,21 @@ mod tests {
                 .any(|a| a.starts_with("-Dnetlogo.extensions.dir=") && a.contains("NetLogo 7.0.4"))
         );
         assert!(args.contains(&"-Djava.awt.headless=true".to_owned()));
+    }
+
+    #[test]
+    fn secrets_reach_the_process_but_not_debug_output() {
+        let mut c = config();
+        c.env.push((
+            "ANTHROPIC_API_KEY".into(),
+            EnvValue("sk-secret-value".into()),
+        ));
+        let cmd = c.command().unwrap();
+        let envs: Vec<_> = cmd.get_envs().collect();
+        assert!(envs.iter().any(|(k, v)| *k == "ANTHROPIC_API_KEY"
+            && v.map(|v| v == "sk-secret-value").unwrap_or(false)));
+        let shown = format!("{c:?}");
+        assert!(shown.contains("ANTHROPIC_API_KEY") && !shown.contains("sk-secret-value"));
     }
 
     #[test]
