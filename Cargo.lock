@@ -255,6 +255,7 @@ dependencies = [
 name = "logos-cli"
 version = "0.0.0"
 dependencies = [
+ "logos-bridge-client",
  "logos-nlogox",
  "logos-project",
 ]
@@ -281,6 +282,7 @@ dependencies = [
 name = "logos-project"
 version = "0.0.0"
 dependencies = [
+ "logos-nlogox",
  "logos-syntax",
  "thiserror",
  "toml_edit 0.25.17+spec-1.1.0",
