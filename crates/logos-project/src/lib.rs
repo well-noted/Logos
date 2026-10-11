@@ -137,10 +137,12 @@ impl Project {
         let mut project = Table::new();
         project.insert("model", value(model));
         doc.insert("project", Item::Table(project));
-        Ok(Project {
+        let mut p = Project {
             dir: dir.into(),
             doc,
-        })
+        };
+        p.ensure_id()?;
+        Ok(p)
     }
 
     /// Reads `logos.toml` from `dir`.
@@ -214,6 +216,29 @@ impl Project {
             .and_then(|p| p.get("engine"))
             .and_then(Item::as_str)
             .map(str::to_owned)
+    }
+
+    /// The project's id, used to keep its secrets apart from other projects' (Part K). It
+    /// stays the same when the folder is moved or renamed.
+    pub fn id(&self) -> Option<String> {
+        self.doc
+            .get("project")
+            .and_then(|p| p.get("id"))
+            .and_then(Item::as_str)
+            .map(str::to_owned)
+    }
+
+    /// The project's id, creating a random one if there is none. Returns whether one was
+    /// created (the caller then saves `logos.toml`).
+    pub fn ensure_id(&mut self) -> Result<(String, bool), ProjectError> {
+        if let Some(id) = self.id() {
+            return Ok((id, false));
+        }
+        let mut b = [0u8; 16];
+        getrandom::fill(&mut b).map_err(|e| invalid("project.id", &e.to_string()))?;
+        let id: String = b.iter().map(|x| format!("{x:02x}")).collect();
+        self.project_table()["id"] = value(&id);
+        Ok((id, true))
     }
 
     pub fn set_engine(&mut self, engine: &str) {
@@ -563,6 +588,19 @@ x = 1
             Some("requirements.txt")
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn ids() {
+        let mut p = project();
+        assert_eq!(p.id(), None);
+        let (id, created) = p.ensure_id().unwrap();
+        assert!(created && id.len() == 32);
+        assert_eq!(p.ensure_id().unwrap(), (id.clone(), false));
+        assert!(p.to_toml().contains(&format!("id = \"{id}\"")));
+        let a = Project::new("x", "m.nlogox").unwrap().id().unwrap();
+        let b = Project::new("x", "m.nlogox").unwrap().id().unwrap();
+        assert_ne!(a, b);
     }
 
     #[test]
