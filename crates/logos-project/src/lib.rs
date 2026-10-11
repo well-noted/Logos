@@ -7,6 +7,7 @@
 //! [`Project`] reads `logos.toml` into typed values and writes changes back through
 //! `toml_edit`, so comments, formatting, key order and keys Logos doesn't know are kept.
 
+pub mod check;
 pub mod detect;
 pub mod dictionary;
 
