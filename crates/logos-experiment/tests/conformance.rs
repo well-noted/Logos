@@ -16,8 +16,13 @@
 
 use std::path::{Path, PathBuf};
 
+use logos_bridge_client::protocol::NlValue;
 use logos_bridge_client::{Bridge, BridgeConfig, find_netlogo_home};
-use logos_experiment::runner::{ExperimentSource, RunOptions, RunOutcome, run_experiment};
+use logos_experiment::dump::same_value;
+use logos_experiment::parquet::{FileInfo, read_parquet, write_parquet};
+use logos_experiment::runner::{
+    ExperimentOutcome, ExperimentSource, RunOptions, RunOutcome, run_experiment,
+};
 use logos_experiment::table::{Table, TableWriter};
 
 const NETLOGO_VERSION: &str = "7.0.4";
@@ -76,7 +81,11 @@ fn model(code: &str, (min_x, max_x, min_y, max_y): (i64, i64, i64, i64)) -> Stri
 }
 
 /// Runs an experiment and returns its table output.
-fn table(bridge: &Bridge, source: &ExperimentSource, workers: usize) -> (String, Vec<RunOutcome>) {
+fn table(
+    bridge: &Bridge,
+    source: &ExperimentSource,
+    workers: usize,
+) -> (String, ExperimentOutcome) {
     let rows = std::sync::Mutex::new(None::<TableWriter<Vec<u8>>>);
     let version = bridge
         .hello()
@@ -107,7 +116,55 @@ fn table(bridge: &Bridge, source: &ExperimentSource, workers: usize) -> (String,
     )
     .unwrap();
     let text = String::from_utf8(rows.into_inner().unwrap().unwrap().into_inner()).unwrap();
-    (text, outcome.runs)
+    (text, outcome)
+}
+
+/// E2: writes the outcome as Parquet, reads it back and compares every value with the table
+/// output. Returns the differences.
+fn parquet_differences(outcome: &ExperimentOutcome, table_text: &str) -> Vec<String> {
+    let dir = temp_dir("e2");
+    let path = dir.join(format!("{}.parquet", outcome.experiment.id));
+    let runs: Vec<_> = outcome.runs.iter().map(|r| &r.result).collect();
+    write_parquet(
+        &path,
+        &outcome.experiment,
+        &runs,
+        &FileInfo {
+            model_path: "model",
+            netlogo_version: NETLOGO_VERSION,
+        },
+    )
+    .unwrap();
+    let back = read_parquet(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let expected = sorted_rows(table_text);
+    let mut out = Vec::new();
+    if back.rows.len() != expected.len() {
+        out.push(format!(
+            "{} rows in Parquet, {} in the table",
+            back.rows.len(),
+            expected.len()
+        ));
+        return out;
+    }
+    let types = &back.types;
+    for (r, (got, want)) in back.rows.iter().zip(&expected).enumerate() {
+        for (c, (g, w)) in got.iter().zip(want).enumerate() {
+            let same = match g {
+                // Failed metrics and unset variables are null.
+                None => w.starts_with('<') && w.ends_with('>') || w == "null",
+                Some(NlValue::String(s)) if types[c] == arrow_schema::DataType::Utf8 => s == w,
+                Some(v) => same_value(v, w),
+            };
+            if !same {
+                out.push(format!(
+                    "row {r}, column {}: {g:?} in Parquet, {w} in the table",
+                    back.columns[c]
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// Table output without the six metadata lines, with LF line ends, as NetLogo's tests compare.
@@ -197,8 +254,12 @@ fn check_case(
     let expected = std::fs::read_to_string(lab.join(format!("{reference}-table.csv")))
         .unwrap()
         .replace("\r\n", "\n");
-    let (text, _) = table(bridge, source, 1);
+    let (text, outcome) = table(bridge, source, 1);
     let got = body(&text);
+    for d in parquet_differences(&outcome, &text).iter().take(5) {
+        eprintln!("  E2 {reference}: {d}");
+        failures.push(format!("{reference} (Parquet)"));
+    }
     if got == expected {
         eprintln!("  same    {reference}");
     } else {
@@ -269,48 +330,101 @@ fn sorted_rows(text: &str) -> Vec<Vec<String>> {
     rows
 }
 
-#[test]
-#[ignore = "needs NetLogo 7.0.4 and the bridge jar"]
-fn a3_aa4_n3_limit1_matches_netlogo_behaviorspace() {
-    let reference_path = repo().join("corpus/reference/aa4-n3-limit1-netlogo-7.0.4.csv");
-    let reference = std::fs::read_to_string(&reference_path).unwrap();
+/// Runs an AA4 experiment through Logos and compares its table (rows sorted by run number)
+/// and its Parquet output with a table NetLogo's headless BehaviorSpace wrote. Returns the
+/// number of differences.
+fn compare_aa4(bridge: &Bridge, name: &str, reference_path: &Path) -> usize {
+    let reference = std::fs::read_to_string(reference_path).unwrap();
     let expected = Table::parse(&reference).unwrap();
-    assert_eq!(expected.experiment, "N3-limit1");
-
-    let bridge = spawn();
+    assert_eq!(expected.experiment, name);
     let workers = workers();
     let source = ExperimentSource {
         model: aa4(),
-        name: "N3-limit1".into(),
+        name: name.into(),
         file: None,
     };
     let started = std::time::Instant::now();
-    let (text, runs) = table(&bridge, &source, workers);
+    let (text, outcome) = table(bridge, &source, workers);
     let total = started.elapsed();
+    let parquet = parquet_differences(&outcome, &text);
+    for d in parquet.iter().take(5) {
+        eprintln!("  E2: {d}");
+    }
     let got = Table::parse(&text).unwrap();
-    assert_eq!(got.columns, expected.columns);
-    assert_eq!(runs.len(), 60, "30 seeds x 2 depletion rates");
-
+    let mut mismatches = Vec::new();
+    if got.columns != expected.columns {
+        mismatches.push("the columns differ".to_owned());
+    }
     let (a, b) = (sorted_rows(&text), sorted_rows(&reference));
-    let mismatches: Vec<String> = a
-        .iter()
-        .zip(&b)
-        .filter(|(x, y)| x != y)
-        .map(|(x, y)| format!("Logos {x:?}\nNetLogo {y:?}"))
-        .collect();
+    if a.len() != b.len() {
+        mismatches.push(format!(
+            "{} rows here, {} in NetLogo's table",
+            a.len(),
+            b.len()
+        ));
+    }
+    mismatches.extend(
+        a.iter()
+            .zip(&b)
+            .filter(|(x, y)| x != y)
+            .map(|(x, y)| format!("Logos {x:?}\nNetLogo {y:?}")),
+    );
     eprintln!(
-        "A3: {} runs, {} rows, {} mismatches; {workers} workers, {:.1} s",
-        runs.len(),
+        "{name}: {} runs, {} rows, {} mismatches, {} Parquet differences; {workers} workers, {:.1} s",
+        outcome.runs.len(),
         a.len(),
         mismatches.len(),
+        parquet.len(),
         total.as_secs_f64()
     );
     for m in mismatches.iter().take(5) {
         eprintln!("  {m}");
     }
-    assert_eq!(a.len(), b.len());
-    assert!(mismatches.is_empty());
+    mismatches.len() + parquet.len()
+}
+
+#[test]
+#[ignore = "needs NetLogo 7.0.4 and the bridge jar"]
+fn a3_aa4_n3_limit1_matches_netlogo_behaviorspace() {
+    let bridge = spawn();
+    let reference = repo().join("corpus/reference/aa4-n3-limit1-netlogo-7.0.4.csv");
+    let differences = compare_aa4(&bridge, "N3-limit1", &reference);
     bridge.shutdown().unwrap();
+    assert_eq!(differences, 0);
+}
+
+/// E1 for AA4's other experiments. Each is compared with
+/// `aa4-<experiment in lower case>-netlogo-7.0.4.csv` in `LOGOS_AA4_REFERENCES` (default
+/// `corpus/reference`); experiments without a reference table are reported and skipped.
+#[test]
+#[ignore = "needs NetLogo 7.0.4, the bridge jar and reference tables"]
+fn e1_aa4_all_experiments() {
+    let dir = std::env::var_os("LOGOS_AA4_REFERENCES")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo().join("corpus/reference"));
+    let names = [
+        "E3-crowding-sweep",
+        "E3-holdout-controls",
+        "E3-holdout-cell1",
+        "E3-holdout-cell2",
+        "E3-holdout-cell3",
+        "E3-holdout-retuned",
+        "E4-crowding-presentation",
+    ];
+    let bridge = spawn();
+    let mut failed = Vec::new();
+    for name in names {
+        let path = dir.join(format!("aa4-{}-netlogo-7.0.4.csv", name.to_lowercase()));
+        if !path.is_file() {
+            eprintln!("{name}: no reference table at {}; skipped", path.display());
+            continue;
+        }
+        if compare_aa4(&bridge, name, &path) > 0 {
+            failed.push(name);
+        }
+    }
+    bridge.shutdown().unwrap();
+    assert!(failed.is_empty(), "differences in {failed:?}");
 }
 
 /// A6: AA4 with eight seeds on parallel workspaces matches the same runs on one workspace.
@@ -346,7 +460,8 @@ fn a6_parallel_workspaces_match_one_at_a_time() {
     };
     let bridge = spawn();
     let started = std::time::Instant::now();
-    let (parallel, parallel_runs) = table(&bridge, &source, 8);
+    let (parallel, parallel_outcome) = table(&bridge, &source, 8);
+    let parallel_runs: &[RunOutcome] = &parallel_outcome.runs;
     let parallel_time = started.elapsed();
     let started = std::time::Instant::now();
     let (sequential, _) = table(&bridge, &source, 1);
