@@ -12,5 +12,6 @@ name = "logos"
 path = "src/main.rs"
 
 [dependencies]
+logos-bridge-client = { path = "../logos-bridge-client" }
 logos-nlogox = { path = "../logos-nlogox" }
 logos-project = { path = "../logos-project" }
