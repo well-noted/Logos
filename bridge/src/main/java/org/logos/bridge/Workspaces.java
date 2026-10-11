@@ -129,6 +129,8 @@ final class Workspaces {
                     String source = string(params, "source");
                     onThread(idle(handle(params)), reply, h -> command(h, source));
                 }
+                case "workspace.program" ->
+                    onThread(idle(handle(params)), reply, h -> ProgramInfo.of(h.ws));
                 case "workspace.observe" -> {
                     List<String> reporters = stringList(params, "reporters");
                     observeNowOrBetweenIterations(handle(params), reply, reporters);
