@@ -8,5 +8,6 @@ rust-version.workspace = true
 description = "Logos projects: a NetLogo model and the files around it, described in logos.toml"
 
 [dependencies]
+logos-syntax = { path = "../logos-syntax" }
 thiserror = "2"
 toml_edit = "0.25"
