@@ -12,7 +12,9 @@ name = "logos"
 path = "src/main.rs"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 logos-bridge-client = { path = "../logos-bridge-client" }
+logos-experiment = { path = "../logos-experiment" }
 logos-nlogox = { path = "../logos-nlogox" }
 logos-project = { path = "../logos-project" }
 logos-secrets = { path = "../logos-secrets" }

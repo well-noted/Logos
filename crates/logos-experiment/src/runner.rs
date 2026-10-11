@@ -1,138 +1,194 @@
 //! Running a BehaviorSpace experiment through the bridge.
 //!
-//! Each run follows BehaviorSpace's steps (`lab/Worker.scala` at NetLogo v7.0.4): set the run's
-//! variables, run the setup commands, run the go commands until they `stop` or the time limit
-//! is reached, then measure the metrics on a clone of the random number generator (D-14).
-//! Several workspaces in one bridge run different runs at the same time (D-09).
+//! The bridge reads the experiment with NetLogo's own loader and runs each run with NetLogo's
+//! own BehaviorSpace code (PROTOCOL.md section 5.4), so variable settings, stop conditions,
+//! metric timing and error handling are BehaviorSpace's. This module schedules the runs: it
+//! opens workspaces in one bridge (D-09), runs the pre-experiment commands in the first, hands
+//! runs to workspaces as they become free, skips runs the caller already has (resume), stops
+//! starting runs when asked, and runs the post-experiment commands at the end.
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use logos_bridge_client::protocol::{NlValue, RpcError, RunEnd, RunStreams, WorkspaceId};
+use logos_bridge_client::protocol::{LabError, LabRunResult, LoadedExperiment, WorkspaceId};
 use logos_bridge_client::{Bridge, ClientError};
-
-use crate::behaviorspace::{Experiment, RunSettings};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunnerError {
     #[error(transparent)]
     Client(#[from] ClientError),
-    #[error("run {run_number}: {detail}")]
-    Run { run_number: u64, detail: String },
-    #[error("{0}")]
-    Unsupported(String),
+    #[error("the model has compile errors: {0}")]
+    Compile(String),
 }
 
-/// The result of one run.
+/// Where the experiment comes from.
+#[derive(Debug, Clone)]
+pub struct ExperimentSource {
+    pub model: PathBuf,
+    pub name: String,
+    /// A separate BehaviorSpace XML file (`--setup-file` in headless NetLogo); `None` reads
+    /// the experiment from the model.
+    pub file: Option<PathBuf>,
+}
+
+/// How to run it.
+pub struct RunOptions<'a> {
+    /// Number of workspaces (parallel runs). At least 1.
+    pub workers: usize,
+    /// Update plots during runs. Off by default, as in headless BehaviorSpace.
+    pub update_plots: bool,
+    /// Runs not to run, because their results already exist.
+    pub skip: BTreeSet<u64>,
+    /// When set, no new runs are started; runs in progress finish.
+    pub cancel: Option<&'a AtomicBool>,
+    /// How long one run may take before the bridge is treated as hung.
+    pub run_timeout: Duration,
+}
+
+impl Default for RunOptions<'_> {
+    fn default() -> Self {
+        RunOptions {
+            workers: 1,
+            update_plots: false,
+            skip: BTreeSet::new(),
+            cancel: None,
+            run_timeout: Duration::from_secs(7 * 24 * 3600),
+        }
+    }
+}
+
+/// A finished run and the workspace (0-based worker index) that ran it.
 #[derive(Debug, Clone)]
 pub struct RunOutcome {
-    pub run_number: u64,
-    /// Steps as BehaviorSpace counts them: completed go iterations, not counting a final one
-    /// that executed `stop`.
-    pub steps: u64,
-    pub metrics: Vec<Result<NlValue, RpcError>>,
-    pub elapsed: Duration,
-    /// Which workspace (0-based worker index) ran it.
+    pub result: LabRunResult,
     pub worker: usize,
 }
 
-/// How long a single run may take before it is treated as hung.
-const RUN_TIMEOUT: Duration = Duration::from_secs(3600);
-
-/// Runs one run in an open workspace.
-pub fn run_one(
-    bridge: &Bridge,
-    ws: WorkspaceId,
-    experiment: &Experiment,
-    settings: &RunSettings,
-) -> Result<(u64, Vec<Result<NlValue, RpcError>>), RunnerError> {
-    let set = settings.set_commands();
-    if !set.is_empty() {
-        bridge.command(ws, &set)?;
-    }
-    bridge.command(ws, &experiment.setup)?;
-    let repeat = (experiment.time_limit > 0).then_some(experiment.time_limit);
-    let run = bridge.run(ws, &experiment.go, repeat, &RunStreams::default())?;
-    let done = bridge.wait_run_finished(ws, run, RUN_TIMEOUT)?;
-    let steps = match done.reason {
-        RunEnd::Stopped => done.iterations.saturating_sub(1),
-        RunEnd::Completed => done.iterations,
-        RunEnd::Halted | RunEnd::Error => {
-            return Err(RunnerError::Run {
-                run_number: settings.run_number,
-                detail: format!("run ended with {:?}: {:?}", done.reason, done.error),
-            });
-        }
-    };
-    let metrics: Vec<&str> = experiment.metrics.iter().map(String::as_str).collect();
-    let observed = bridge.observe(ws, &metrics)?;
-    Ok((steps, observed.values))
+/// What `run_experiment` did.
+#[derive(Debug, Clone)]
+pub struct ExperimentOutcome {
+    pub experiment: LoadedExperiment,
+    /// Runs that ran, in run-number order.
+    pub runs: Vec<RunOutcome>,
+    /// Runs neither run nor skipped, because of `cancel`.
+    pub not_started: Vec<u64>,
+    pub pre_experiment_error: Option<LabError>,
+    pub post_experiment_error: Option<LabError>,
+    pub elapsed: Duration,
 }
 
-/// Runs `runs` of `experiment` on `workers` workspaces of one bridge. `on_done` is called as
-/// each run finishes, from the worker thread that ran it. Results are returned in run order.
+/// Loads an experiment in a new workspace to see its runs, then disposes the workspace.
+pub fn load_experiment(
+    bridge: &Bridge,
+    source: &ExperimentSource,
+) -> Result<LoadedExperiment, RunnerError> {
+    let ws = open(bridge, &source.model)?;
+    let loaded = bridge.experiment_load(ws, &source.name, source.file.as_deref());
+    let _ = bridge.dispose(ws);
+    let e = loaded?;
+    let _ = bridge.experiment_close(e.id);
+    Ok(e)
+}
+
+fn open(bridge: &Bridge, model: &Path) -> Result<WorkspaceId, RunnerError> {
+    let opened = bridge.open(model)?;
+    if !opened.compiled {
+        let messages: Vec<String> = opened.errors.iter().map(|e| e.message.clone()).collect();
+        let _ = bridge.dispose(opened.workspace);
+        return Err(RunnerError::Compile(messages.join("; ")));
+    }
+    Ok(opened.workspace)
+}
+
+/// Runs an experiment. `on_started` is called once the experiment is loaded, with the runs
+/// that will run; `on_done` as each run ends, from the thread that ran it.
 pub fn run_experiment(
     bridge: &Bridge,
-    model: &Path,
-    experiment: &Experiment,
-    runs: &[RunSettings],
-    workers: usize,
-    on_done: &(dyn Fn(&RunOutcome) + Sync),
-) -> Result<Vec<RunOutcome>, RunnerError> {
-    if experiment.run_metrics_every_step {
-        return Err(RunnerError::Unsupported(
-            "measuring metrics every step is not supported yet".into(),
-        ));
+    source: &ExperimentSource,
+    options: &RunOptions,
+    on_started: &dyn Fn(&LoadedExperiment, &[u64]),
+    on_done: &(dyn Fn(&LoadedExperiment, &RunOutcome) + Sync),
+) -> Result<ExperimentOutcome, RunnerError> {
+    let started = Instant::now();
+    let first = open(bridge, &source.model)?;
+    let mut workspaces = vec![first];
+    let result = run_in(
+        bridge,
+        source,
+        options,
+        &mut workspaces,
+        on_started,
+        on_done,
+        started,
+    );
+    for ws in workspaces {
+        let _ = bridge.dispose(ws);
     }
-    if !experiment.exit_condition.trim().is_empty() {
-        return Err(RunnerError::Unsupported(
-            "stop conditions are not supported yet".into(),
-        ));
+    result
+}
+
+fn run_in(
+    bridge: &Bridge,
+    source: &ExperimentSource,
+    options: &RunOptions,
+    workspaces: &mut Vec<WorkspaceId>,
+    on_started: &dyn Fn(&LoadedExperiment, &[u64]),
+    on_done: &(dyn Fn(&LoadedExperiment, &RunOutcome) + Sync),
+    started: Instant,
+) -> Result<ExperimentOutcome, RunnerError> {
+    let first = workspaces[0];
+    let experiment = bridge.experiment_load(first, &source.name, source.file.as_deref())?;
+    let todo: Vec<u64> = (1..=experiment.runs.len() as u64)
+        .filter(|r| !options.skip.contains(r))
+        .collect();
+    on_started(&experiment, &todo);
+
+    // BehaviorSpace runs the pre-experiment commands in its first workspace before any run.
+    let pre = bridge.experiment_command(first, experiment.id, "preExperiment")?;
+
+    let workers = options.workers.max(1).min(todo.len().max(1));
+    for _ in 1..workers {
+        workspaces.push(open(bridge, &source.model)?);
     }
-    let workers = workers.max(1).min(runs.len().max(1));
-    let queue = Mutex::new(runs.iter());
-    let results = Mutex::new(Vec::with_capacity(runs.len()));
+
+    let queue = Mutex::new(todo.iter().copied());
+    let results = Mutex::new(Vec::with_capacity(todo.len()));
     let first_error: Mutex<Option<RunnerError>> = Mutex::new(None);
+    let cancelled = || options.cancel.is_some_and(|c| c.load(Ordering::SeqCst));
+    let experiment_ref = &experiment;
 
     std::thread::scope(|scope| {
-        for worker in 0..workers {
+        for (worker, &ws) in workspaces.iter().enumerate() {
             let (queue, results, first_error) = (&queue, &results, &first_error);
             scope.spawn(move || {
-                let ws = match bridge.open(model) {
-                    Ok(r) => r.workspace,
-                    Err(e) => {
-                        first_error.lock().unwrap().get_or_insert(e.into());
-                        return;
-                    }
-                };
                 loop {
-                    if first_error.lock().unwrap().is_some() {
+                    if first_error.lock().unwrap().is_some() || cancelled() {
                         break;
                     }
-                    let Some(settings) = queue.lock().unwrap().next() else {
+                    let Some(run_number) = queue.lock().unwrap().next() else {
                         break;
                     };
-                    let started = Instant::now();
-                    match run_one(bridge, ws, experiment, settings) {
-                        Ok((steps, metrics)) => {
-                            let outcome = RunOutcome {
-                                run_number: settings.run_number,
-                                steps,
-                                metrics,
-                                elapsed: started.elapsed(),
-                                worker,
-                            };
-                            on_done(&outcome);
+                    match bridge.experiment_run(
+                        ws,
+                        experiment_ref.id,
+                        run_number,
+                        options.update_plots,
+                        options.run_timeout,
+                    ) {
+                        Ok(result) => {
+                            let outcome = RunOutcome { result, worker };
+                            on_done(experiment_ref, &outcome);
                             results.lock().unwrap().push(outcome);
                         }
                         Err(e) => {
-                            first_error.lock().unwrap().get_or_insert(e);
+                            first_error.lock().unwrap().get_or_insert(e.into());
                             break;
                         }
                     }
                 }
-                let _ = bridge.dispose(ws);
             });
         }
     });
@@ -140,7 +196,26 @@ pub fn run_experiment(
     if let Some(e) = first_error.into_inner().unwrap() {
         return Err(e);
     }
-    let mut results = results.into_inner().unwrap();
-    results.sort_by_key(|r| r.run_number);
-    Ok(results)
+    let mut runs = results.into_inner().unwrap();
+    runs.sort_by_key(|r| r.result.run_number);
+    let ran: BTreeSet<u64> = runs.iter().map(|r| r.result.run_number).collect();
+    let not_started: Vec<u64> = todo.into_iter().filter(|r| !ran.contains(r)).collect();
+
+    // And the post-experiment commands after the last, unless the experiment was cut short.
+    let post = if not_started.is_empty() {
+        bridge
+            .experiment_command(first, experiment.id, "postExperiment")?
+            .error
+    } else {
+        None
+    };
+    let _ = bridge.experiment_close(experiment.id);
+    Ok(ExperimentOutcome {
+        experiment,
+        runs,
+        not_started,
+        pre_experiment_error: pre.error,
+        post_experiment_error: post,
+        elapsed: started.elapsed(),
+    })
 }
