@@ -10,7 +10,7 @@ Status: Phase 0 (technical spikes) is done; Phase 1 is specified. Nothing is usa
 - [Decision log](docs/decisions.md)
 - [Repository layout and Windows build](docs/repo-layout.md)
 - [Phase 0 specification](docs/phase-0-spec.md) and [results](docs/phase-0-results.md)
-- [Phase 1 specification](docs/phase-1-spec.md)
+- [Phase 1 specification](docs/phase-1-spec.md) and [results so far](docs/phase-1-results.md)
 
 ## License
 
