@@ -19,6 +19,7 @@ mod config;
 
 pub use client::{Bridge, ClientError, Notification};
 pub use config::{
-    BridgeConfig, JAVA_ENV, NETLOGO_HOME_ENV, bundled_java, find_netlogo_home, netlogo_jar,
+    BridgeConfig, EnvValue, JAVA_ENV, NETLOGO_HOME_ENV, bundled_java, find_netlogo_home,
+    netlogo_jar,
 };
 pub use logos_protocol as protocol;

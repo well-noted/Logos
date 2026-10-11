@@ -1,9 +1,10 @@
 //! BehaviorSpace experiments as stored in `.nlogox` files.
 //!
-//! Phase 0 supports what the conformance check needs: `enumeratedValueSet` and
-//! `steppedValueSet`, sequential run order, repetitions, a time limit, metrics measured at the
-//! end of each run, and setup/go commands. Anything else is reported as unsupported rather than
-//! ignored.
+//! Reads `enumeratedValueSet` and `steppedValueSet`, run order, repetitions, a time limit,
+//! the stop condition, metrics and setup/go commands, enough to list an experiment's runs
+//! without starting NetLogo. Anything else is reported as unsupported rather than ignored.
+//! Running an experiment doesn't use this parser: the bridge reads experiments with NetLogo's
+//! own loader (PROTOCOL.md section 5.4).
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
@@ -65,34 +66,43 @@ impl RunSettings {
 }
 
 impl Experiment {
-    /// The runs of this experiment in BehaviorSpace order.
+    /// The runs of this experiment in BehaviorSpace order (`LabProtocol.refElements` at
+    /// v7.0.4).
     ///
-    /// The first variable changes slowest and the last fastest. With sequential run order, each
-    /// combination is repeated `repetitions` times before moving to the next one; otherwise
-    /// the whole set of combinations is repeated.
+    /// With sequential run order, the last variable changes fastest and each combination is
+    /// repeated `repetitions` times before moving to the next one. Otherwise the first variable
+    /// changes fastest and the whole set of combinations is repeated.
     pub fn runs(&self) -> Vec<RunSettings> {
-        let mut combos: Vec<Vec<(String, String)>> = vec![Vec::new()];
-        for var in &self.variables {
-            let mut next = Vec::with_capacity(combos.len() * var.values.len());
-            for prefix in &combos {
-                for v in &var.values {
-                    let mut c = prefix.clone();
-                    c.push((var.name.clone(), v.clone()));
-                    next.push(c);
-                }
+        let count: usize = self.variables.iter().map(|v| v.values.len()).product();
+        let combo = |mut i: usize| -> Vec<(String, String)> {
+            let mut digits = vec![0; self.variables.len()];
+            let order: Vec<usize> = if self.sequential_run_order {
+                (0..self.variables.len()).rev().collect()
+            } else {
+                (0..self.variables.len()).collect()
+            };
+            for k in order {
+                let n = self.variables[k].values.len();
+                digits[k] = i % n;
+                i /= n;
             }
-            combos = next;
-        }
+            self.variables
+                .iter()
+                .zip(digits)
+                .map(|(v, d)| (v.name.clone(), v.values[d].clone()))
+                .collect()
+        };
         let mut ordered = Vec::new();
         if self.sequential_run_order {
-            for c in &combos {
+            for i in 0..count {
+                let c = combo(i);
                 for _ in 0..self.repetitions {
                     ordered.push(c.clone());
                 }
             }
         } else {
             for _ in 0..self.repetitions {
-                ordered.extend(combos.iter().cloned());
+                ordered.extend((0..count).map(combo));
             }
         }
         ordered
@@ -389,6 +399,20 @@ set x 1]]></setup>
             runs[0].set_commands(),
             "set a 1\nset mode \"zones\"\nset s 0"
         );
+    }
+
+    #[test]
+    fn interleaved_runs_change_the_first_variable_fastest() {
+        let mut e = find_experiment(XML, "E1").unwrap();
+        e.sequential_run_order = false;
+        let runs = e.runs();
+        assert_eq!(runs.len(), 16);
+        let a_s = |r: &RunSettings| (r.values[0].1.clone(), r.values[2].1.clone());
+        assert_eq!(a_s(&runs[0]), ("1".into(), "0".into()));
+        assert_eq!(a_s(&runs[1]), ("2".into(), "0".into()));
+        assert_eq!(a_s(&runs[2]), ("1".into(), "0.1".into()));
+        // The second repetition starts over.
+        assert_eq!(runs[8].values, runs[0].values);
     }
 
     #[test]
