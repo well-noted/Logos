@@ -9,7 +9,10 @@ use logos_project::detect::detect;
 use logos_project::{FileEntry, PROJECT_FILE, Project, Python, Secrets};
 
 /// Checks against this machine.
-struct Machine;
+struct Machine {
+    store: Option<Box<dyn logos_secrets::SecretStore>>,
+    project_id: Option<String>,
+}
 
 impl Environment for Machine {
     fn run_python(&self, interpreter: &str, args: &[&str]) -> Option<String> {
@@ -21,9 +24,15 @@ impl Environment for Machine {
     }
 
     fn has_secret(&self, name: &str) -> bool {
-        // The credential store is added with `logos secrets` (Part K); until then, the
-        // environment only.
-        std::env::var_os(name).is_some_and(|v| !v.is_empty())
+        match &self.store {
+            Some(store) => logos_secrets::resolve(
+                store.as_ref(),
+                self.project_id.as_deref(),
+                &[name.to_owned()],
+            )
+            .is_ok_and(|r| r.contains_key(name)),
+            None => std::env::var_os(name).is_some_and(|v| !v.is_empty()),
+        }
     }
 
     fn netlogo_home(&self, version: &str) -> Option<PathBuf> {
@@ -159,7 +168,25 @@ pub fn run(args: &[&str]) -> Result<(), String> {
         );
         p
     };
-    let mut findings = check(&project, &Machine);
+    let declares_secrets = project
+        .secrets()
+        .is_ok_and(|s| !s.required.is_empty() || !s.optional.is_empty());
+    let store = if declares_secrets {
+        match crate::secrets::store() {
+            Ok(s) => Some(s),
+            Err(e) => {
+                println!("Secrets store not available ({e}); checking the environment only.");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let machine = Machine {
+        store,
+        project_id: project.id(),
+    };
+    let mut findings = check(&project, &machine);
     if compile_too {
         let version = project
             .engine()

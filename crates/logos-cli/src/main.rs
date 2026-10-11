@@ -2,13 +2,23 @@
 
 mod check;
 mod init;
+mod secrets;
 
 use std::process::ExitCode;
+
+fn usage() -> String {
+    USAGE.replace(
+        "{secrets_usage}",
+        secrets::USAGE.split("\n\n").next().unwrap_or(""),
+    ) + "\n"
+        + secrets::USAGE.split("\n\n").nth(1).unwrap_or("")
+}
 
 const USAGE: &str = "\
 usage:
   logos project init [FOLDER] [--model FILE] [--dry-run] [--yes]
   logos check [FOLDER] [--compile]
+{secrets_usage}
 
   project init   propose logos.toml for the model in FOLDER (default: the current folder),
                  ask about anything it can't decide, and write it after you confirm
@@ -28,11 +38,12 @@ fn main() -> ExitCode {
     let result = match words.as_slice() {
         ["project", "init", rest @ ..] => init::run(rest),
         ["check", rest @ ..] => check::run(rest),
+        ["secrets", rest @ ..] => secrets::run(rest),
         ["help" | "--help" | "-h"] | [] => {
-            print!("{USAGE}");
+            print!("{}", usage());
             Ok(())
         }
-        _ => Err(format!("unknown command\n\n{USAGE}")),
+        _ => Err(format!("unknown command\n\n{}", usage())),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
