@@ -201,15 +201,25 @@ pub fn run(args: &[&str]) -> Result<(), String> {
             interpreter: None,
         });
     }
-    if !d.secret_names.is_empty()
-        && (o.yes || yes("Record those environment variable names as required secrets?")?)
-    {
-        project
-            .set_secrets(&Secrets {
-                required: d.secret_names.iter().cloned().collect(),
-                optional: Vec::new(),
-            })
-            .map_err(|e| e.to_string())?;
+    // A model often needs only one of several provider keys, so detected names are optional
+    // unless the user says a run needs them.
+    let mut secrets = Secrets::default();
+    for n in &d.secret_names {
+        let a = if o.yes {
+            "o".to_owned()
+        } else {
+            ask(&format!(
+                "Secret {n}: (r)equired for every run, (o)ptional, or (s)kip?"
+            ))?
+        };
+        match a.as_str() {
+            "r" => secrets.required.push(n.clone()),
+            "o" => secrets.optional.push(n.clone()),
+            _ => {}
+        }
+    }
+    if !secrets.required.is_empty() || !secrets.optional.is_empty() {
+        project.set_secrets(&secrets).map_err(|e| e.to_string())?;
     }
     println!("\n{}", project.to_toml());
     if !o.yes && !yes(&format!("Write this to {PROJECT_FILE}?"))? {
