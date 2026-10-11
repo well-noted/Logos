@@ -39,7 +39,7 @@ fn parse(args: &[&str]) -> Result<Options, String> {
     Ok(o)
 }
 
-fn find_model(dir: &Path, given: Option<String>) -> Result<String, String> {
+pub fn find_model(dir: &Path, given: Option<String>) -> Result<String, String> {
     if let Some(m) = given {
         return Ok(m);
     }
@@ -65,7 +65,7 @@ fn find_model(dir: &Path, given: Option<String>) -> Result<String, String> {
 }
 
 /// The model's code plus the code of its `.nls` includes, for detection.
-fn model_code(dir: &Path, model: &str) -> Result<String, String> {
+pub fn model_code(dir: &Path, model: &str) -> Result<String, String> {
     let text = std::fs::read_to_string(dir.join(model))
         .map_err(|e| format!("cannot read {model}: {e}"))?;
     let f = Nlogox::parse(text).map_err(|e| format!("{model}: {e}"))?;
