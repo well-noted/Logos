@@ -30,7 +30,7 @@ The bridge reads experiments with NetLogo's own loader and runs each run with Ne
 | # | Criterion | Result | Status |
 |---|---|---|---|
 | E1 | Results match NetLogo | NetLogo's own BehaviorSpace test cases (`test/lab` at v7.0.4): all 36 table outputs identical, covering metrics every step, stop conditions, time limits, setting `random-seed` and world size, sub-experiments, runtime errors in setup, go and metrics, and experiments stored in a model. Two files in that folder (`testStats`, `testStatsExcludeMetrics`) are not table references: NetLogo's test uses them only as input to its statistics output, and NetLogo 7.0.4's headless BehaviorSpace doesn't reproduce them either. AA4 `N3-limit1`: all 60 rows identical to the Windows reference table, as text. AA4's other seven experiments: reference tables being recorded with NetLogo's headless BehaviorSpace (step 6) | Partly met |
-| E2 | Parquet output | Step 7 | Open |
+| E2 | Parquet output | `results.parquet`, one row per measurement, typed columns. For all 36 NetLogo test cases every value read back from Parquet equals the table output. AA4 not yet checked | Partly met |
 | E3 | Provenance | Step 8 | Open |
-| E4 | Resume | The runner can skip runs; resuming from a results folder is step 8 | Open |
+| E4 | Resume | `logos run --resume DIR` runs only the runs the folder doesn't have; Ctrl-C stops runs in progress after their current step and they are not saved. Checked here on a 6-run experiment interrupted after 3 runs. The comparison with an uninterrupted run on AA4 is in the test handoff | Partly met |
 | E5 | Throughput | Step 8, on Thomas's machine. For reference, `N3-limit1` took 277 s here with 2 workers | Open |

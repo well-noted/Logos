@@ -150,7 +150,7 @@ cargo test -p logos-bridge-client -- --ignored --test-threads=1
 Other Phase 0 checks (each prints a summary line; `docs/phase-0-results.md` records them):
 
 ```
-cargo test -p logos-experiment -- --ignored --test-threads=1 --nocapture              # A3, A6, E1
+cargo test -p logos-experiment -- --ignored --test-threads=1 --nocapture              # A3, A6, E1, E2
 cargo test -p logos-bridge-client --test extensions -- --ignored --test-threads=1 --nocapture  # A7
 cargo test -p logos-bridge-client --test agents -- --ignored --nocapture              # A5
 cargo test -p logos-bridge-client --test model_tools -- --ignored --test-threads=1 --nocapture # A8, A9
