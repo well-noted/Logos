@@ -62,11 +62,11 @@ NetLogo's headless renderer can return the view as an in-memory image (`Headless
 
 Spike A results on Windows (docs/phase-0-results.md): rendered frames on AA4 at 28.7 fps shown against a 30 fps cap (A4); agent state for 10,000 turtles at 30.2 updates/s against the same cap, and 219 updates/s uncapped (A5). Accepted by Thomas, 2026-10-09.
 
-## D-11 Parser approach: hand-written lossless parser — proposed
+## D-11 Parser approach: hand-written lossless parser — accepted
 
 A hand-written lexer and parser in Rust that produces a lossless syntax tree (every byte, including whitespace and comments, belongs to a token), probably using `rowan`. Tree-sitter may be added later as a separate grammar for highlighting in editors that use it. Spike B confirms.
 
-Spike B result (docs/phase-0-results.md): `logos-syntax` is hand-written on `rowan` 0.17. Over 592 models and 3 `.nls` files the tree's text equals the source, the parser reports no false errors, its declarations and procedures match NetLogo's for all 514 models compared, and the largest model parses in 2.7 ms. Waiting on Thomas to accept.
+Spike B result (docs/phase-0-results.md): `logos-syntax` is hand-written on `rowan` 0.17. Over 592 models and 3 `.nls` files the tree's text equals the source, the parser reports no false errors, its declarations and procedures match NetLogo's for all 514 models compared, and the largest model parses in 2.7 ms. Accepted by Thomas, 2026-10-11.
 
 ## D-12 `gis` and `nw` are in scope for planning — accepted
 
@@ -120,10 +120,14 @@ NetLogo 7.0.4's `netlogo-headless.bat` fails when NetLogo is installed in a fold
 
 Logos never builds a launch command by joining strings or by calling NetLogo's launch scripts. It starts Java directly and passes each argument as a separate list element (`std::process::Command::arg`), as `logos-bridge-client` already does. The fix for NetLogo's script (drop the trailing backslash in that one place) is a candidate upstream PR.
 
-## D-18 Converting a legacy model does not re-lay out its widgets — proposed
+## D-18 Converting a legacy model does not re-lay out its widgets — accepted
 
 When NetLogo 7.0.4's GUI opens a model saved before NetLogo 6.4.0, it asks whether to resize the interface widgets for NetLogo 7's larger widgets ("Resize and adjust positions" or "Skip", `app/FileManager.scala`). "Resize and adjust positions" runs `WidgetPanel.convertWidgetSizes`, which takes each widget's minimum size from its Swing component on screen and then moves widgets apart to keep their gaps. The same tool is in the Tools menu (Convert Widgets to New Sizes), so it can also run after the model is open.
 
 `model.convertLegacy` matches the GUI with "Skip": the widgets keep their old geometry and are written with `sizeVersion="0"`, which NetLogo 7 reads as old-size widgets. The bridge cannot reproduce "Resize and adjust positions" exactly without drawing the widgets in Swing.
 
-Proposal: the conversion stays as it is. Re-laying out old-size widgets becomes a separate, optional command in Logos's interface editor (Phase 2), where Logos knows its own widget sizes. Until then a user who wants NetLogo's re-layout can open the converted model in NetLogo and run Tools > Convert Widgets to New Sizes.
+The conversion stays as it is. Logos's interface editor gets a command that lays out old-size widgets automatically once it knows its own widget sizes (Phase 2). Until then a user who wants NetLogo's re-layout can open the converted model in NetLogo and run Tools > Convert Widgets to New Sizes. Accepted by Thomas, 2026-10-11.
+
+## D-19 Models move freely between Logos and NetLogo — accepted
+
+A model made or edited in Logos opens in NetLogo 7.0.4 without changes, and a model made in NetLogo opens in Logos without changes. `.nlogox` stays the model file; Logos never requires anything inside it that NetLogo doesn't understand, and keeps everything NetLogo writes that Logos doesn't understand (Spike B, B1-B3). Anything Logos adds beyond NetLogo (project settings, experiment results, notebooks, file descriptions) lives in separate files next to the model, so NetLogo ignores it and a NetLogo user loses nothing. Stated by Thomas, 2026-10-11.
