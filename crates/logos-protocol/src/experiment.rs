@@ -193,6 +193,8 @@ pub struct LabRunResult {
     pub measurements: Vec<Measurement>,
     pub errors: Vec<LabError>,
     pub elapsed_millis: f64,
+    /// The result as the bridge sent it; `from_json` reads it back.
+    pub raw: Json,
 }
 
 impl LabRunResult {
@@ -220,6 +222,7 @@ impl LabRunResult {
                 v.get("errors").cloned().ok_or_else(|| missing("errors"))?,
             )?,
             elapsed_millis: v.get("elapsedMillis").and_then(Json::as_f64).unwrap_or(0.0),
+            raw: v.clone(),
         })
     }
 }

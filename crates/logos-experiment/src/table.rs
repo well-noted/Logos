@@ -321,6 +321,7 @@ mod tests {
                 .collect(),
             errors: Vec::new(),
             elapsed_millis: 0.0,
+            raw: serde_json::Value::Null,
         }
     }
 
