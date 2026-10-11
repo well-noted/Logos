@@ -12,11 +12,11 @@ Measurements against the criteria in `docs/phase-1-spec.md`, part by part, as th
 
 ## Part K: secrets and environment
 
-Measured 2026-10-11 on Linux (cloud, no Secret Service, so the encrypted file store). Windows Credential Manager pending.
+Measured 2026-10-11 on Linux (cloud, no Secret Service, so the encrypted file store) and on Windows (Credential Manager, by Thomas).
 
 | # | Criterion | Result | Status |
 |---|---|---|---|
-| K1 | Set, list (masked), unmask, change and delete from the CLI | `logos secrets set/list/show/delete` work with the encrypted file store. `show` refuses without an interactive terminal and asks for the name to be typed before printing; every set, import, show and delete is logged by name and time in `secrets-access.log`. Windows Credential Manager and macOS Keychain not yet run | Met on Linux file store; Windows pending |
+| K1 | Set, list (masked), unmask, change and delete from the CLI | `logos secrets set/list/show/delete` work with the encrypted file store. `show` refuses without an interactive terminal and asks for the name to be typed before printing; every set, import, show and delete is logged by name and time in `secrets-access.log`. On Windows the value is stored in Credential Manager (entry `user/LOGOS_TEST_KEY` under `logos`), `show` prints it after the name is typed, and `delete` removes the entry. macOS Keychain not yet run | Met on Linux (file store) and Windows (Credential Manager); macOS pending |
 | K2 | No secret in any file Logos writes | With fake keys set and imported: no value found in `logos.toml`, the configuration folder (`secrets.enc` is encrypted, names included; `secrets-access.log` has names only) or the scrubbed `.env`. The bridge receives values as environment variables, and its configuration prints `[hidden]` for them. The full check (a recorded MASTOC-LLM run) needs the experiment runner and Part L | Partly met |
 | K3 | `.env` import | `logos secrets import-env` stores each value, declares new names as optional in `logos.toml`, and with the user's agreement rewrites the file with values removed (names, comments and line endings kept) | Met |
 | K4 | No credential store | On Linux without a Secret Service, the passphrase-encrypted file is used (Argon2id key, XChaCha20-Poly1305, a new nonce on every write); a wrong passphrase is rejected; nothing is written in plain text | Met |
