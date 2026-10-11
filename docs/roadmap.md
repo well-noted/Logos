@@ -17,6 +17,7 @@ Many modelers want agents that call language models (GABM) but don't write Pytho
 
 - A NetLogo include file (for example `logos-llm.nls`) with procedures such as asking a model a question, asking it to choose from a list of options, and passing messages between agents, written in NetLogo and calling the Python module through `py`.
 - The Python module next to it, handling providers (Anthropic, OpenAI-compatible endpoints, Ollama), memory per agent, and response parsing.
+- The bridge's interactions are set up in a graphical editor in Logos: which provider and model each agent type uses, prompts and the model variables they include, memory, messages between agents, and how responses become NetLogo values. The user never has to edit the Python module; Logos writes its settings to a file the module reads.
 - Logos adds both to a project on request, lists them in `logos.toml`, and keeps the keys in the credential store (Part K). The model then also runs in plain NetLogo with the `py` extension and Python installed (D-19).
 - Runs are recorded, replayable and budgeted by Part L with no extra work.
 
