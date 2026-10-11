@@ -138,7 +138,8 @@ public final class Bridge {
             } else {
                 throw new RpcException(RpcException.INVALID_PARAMS, "params must be an object");
             }
-            if (method.startsWith("workspace.") || method.equals("engine.primitives")
+            if (method.startsWith("workspace.") || method.startsWith("experiment.")
+                    || method.equals("engine.primitives")
                     || method.equals("model.convertLegacy")) {
                 if (!initialized) {
                     throw new RpcException(RpcException.NOT_INITIALIZED,
