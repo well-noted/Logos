@@ -24,3 +24,7 @@
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Written by logos run and by test sessions
+/corpus/own/*/results/
+/test-reports/
