@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use logos_protocol::{
     CommandParams, ConvertLegacyParams, ConvertLegacyResult, DataFrame, HelloParams, HelloResult,
     Incoming, Kind, ObserveParams, ObserveResult, OpenParams, OpenResult, PROTOCOL_VERSION,
-    PrimitivesParams, PrimitivesResult, Request, RpcError, RunFinished, RunParams, RunStreams,
-    WorkspaceId, WorkspaceParams, read_frame, write_frame,
+    PrimitivesParams, PrimitivesResult, ProgramResult, Request, RpcError, RunFinished, RunParams,
+    RunStreams, WorkspaceId, WorkspaceParams, read_frame, write_frame,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -221,6 +221,15 @@ impl Bridge {
         self.call_typed(
             "workspace.open",
             OpenParams { path: &path },
+            DEFAULT_TIMEOUT,
+        )
+    }
+
+    /// The compiled model's declarations and procedures as NetLogo holds them.
+    pub fn program(&self, workspace: WorkspaceId) -> Result<ProgramResult, ClientError> {
+        self.call_typed(
+            "workspace.program",
+            WorkspaceParams { workspace },
             DEFAULT_TIMEOUT,
         )
     }
