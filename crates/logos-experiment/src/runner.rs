@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use logos_bridge_client::protocol::{LabError, LabRunResult, LoadedExperiment, WorkspaceId};
@@ -42,7 +42,8 @@ pub struct RunOptions<'a> {
     pub update_plots: bool,
     /// Runs not to run, because their results already exist.
     pub skip: BTreeSet<u64>,
-    /// When set, no new runs are started; runs in progress finish.
+    /// When set, no new runs are started, and runs in progress are stopped after their current
+    /// step (they end as halted and are not measured at the end).
     pub cancel: Option<&'a AtomicBool>,
     /// How long one run may take before the bridge is treated as hung.
     pub run_timeout: Duration,
@@ -73,7 +74,8 @@ pub struct ExperimentOutcome {
     pub experiment: LoadedExperiment,
     /// Runs that ran, in run-number order.
     pub runs: Vec<RunOutcome>,
-    /// Runs neither run nor skipped, because of `cancel`.
+    /// Runs neither run nor skipped, because of `cancel`. Runs stopped by `cancel` are in
+    /// `runs`, with reason `Halted`.
     pub not_started: Vec<u64>,
     pub pre_experiment_error: Option<LabError>,
     pub post_experiment_error: Option<LabError>,
@@ -160,9 +162,25 @@ fn run_in(
     let cancelled = || options.cancel.is_some_and(|c| c.load(Ordering::SeqCst));
     let experiment_ref = &experiment;
 
+    let finished = AtomicUsize::new(0);
     std::thread::scope(|scope| {
+        // Stops the runs in progress when the caller cancels.
+        let (finished_ref, all) = (&finished, workspaces.len());
+        let ids: &[WorkspaceId] = workspaces;
+        scope.spawn(move || {
+            while finished_ref.load(Ordering::SeqCst) < all {
+                if cancelled() {
+                    for &ws in ids {
+                        let _ = bridge.stop(ws);
+                    }
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
         for (worker, &ws) in workspaces.iter().enumerate() {
             let (queue, results, first_error) = (&queue, &results, &first_error);
+            let finished = &finished;
             scope.spawn(move || {
                 loop {
                     if first_error.lock().unwrap().is_some() || cancelled() {
@@ -189,6 +207,7 @@ fn run_in(
                         }
                     }
                 }
+                finished.fetch_add(1, Ordering::SeqCst);
             });
         }
     });
@@ -202,7 +221,10 @@ fn run_in(
     let not_started: Vec<u64> = todo.into_iter().filter(|r| !ran.contains(r)).collect();
 
     // And the post-experiment commands after the last, unless the experiment was cut short.
-    let post = if not_started.is_empty() {
+    let halted = runs
+        .iter()
+        .any(|r| r.result.reason == logos_bridge_client::protocol::LabRunEnd::Halted);
+    let post = if not_started.is_empty() && !halted {
         bridge
             .experiment_command(first, experiment.id, "postExperiment")?
             .error
