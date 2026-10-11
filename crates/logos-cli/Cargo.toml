@@ -15,3 +15,5 @@ path = "src/main.rs"
 logos-bridge-client = { path = "../logos-bridge-client" }
 logos-nlogox = { path = "../logos-nlogox" }
 logos-project = { path = "../logos-project" }
+logos-secrets = { path = "../logos-secrets" }
+rpassword = "7.5"
