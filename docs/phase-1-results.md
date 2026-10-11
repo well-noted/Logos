@@ -20,3 +20,17 @@ Measured 2026-10-11 on Linux (cloud, no Secret Service, so the encrypted file st
 | K2 | No secret in any file Logos writes | With fake keys set and imported: no value found in `logos.toml`, the configuration folder (`secrets.enc` is encrypted, names included; `secrets-access.log` has names only) or the scrubbed `.env`. The bridge receives values as environment variables, and its configuration prints `[hidden]` for them. The full check (a recorded MASTOC-LLM run) needs the experiment runner and Part L | Partly met |
 | K3 | `.env` import | `logos secrets import-env` stores each value, declares new names as optional in `logos.toml`, and with the user's agreement rewrites the file with values removed (names, comments and line endings kept) | Met |
 | K4 | No credential store | On Linux without a Secret Service, the passphrase-encrypted file is used (Argon2id key, XChaCha20-Poly1305, a new nonce on every write); a wrong passphrase is rejected; nothing is written in plain text | Met |
+
+## Part E: experiments and provenance
+
+Measured 2026-10-11 on Linux (cloud, 2 processors, OpenJDK 21).
+
+The bridge reads experiments with NetLogo's own loader and runs each run with NetLogo's own BehaviorSpace code (`org.nlogo.lab.Worker.Runner`), so settings, stop conditions, metric timing, sub-experiments and error handling are BehaviorSpace's by construction. Logos schedules the runs and writes the output (PROTOCOL.md section 5.4).
+
+| # | Criterion | Result | Status |
+|---|---|---|---|
+| E1 | Results match NetLogo | NetLogo's own BehaviorSpace test cases (`test/lab` at v7.0.4): all 36 table outputs identical, covering metrics every step, stop conditions, time limits, setting `random-seed` and world size, sub-experiments, runtime errors in setup, go and metrics, and experiments stored in a model. Two files in that folder (`testStats`, `testStatsExcludeMetrics`) are not table references: NetLogo's test uses them only as input to its statistics output, and NetLogo 7.0.4's headless BehaviorSpace doesn't reproduce them either. AA4 `N3-limit1`: all 60 rows identical to the Windows reference table, as text. AA4's other seven experiments: reference tables being recorded with NetLogo's headless BehaviorSpace (step 6) | Partly met |
+| E2 | Parquet output | Step 7 | Open |
+| E3 | Provenance | Step 8 | Open |
+| E4 | Resume | The runner can skip runs; resuming from a results folder is step 8 | Open |
+| E5 | Throughput | Step 8, on Thomas's machine. For reference, `N3-limit1` took 277 s here with 2 workers | Open |
