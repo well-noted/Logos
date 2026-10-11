@@ -1,0 +1,16 @@
+[package]
+name = "logos-cli"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "The logos command"
+
+[[bin]]
+name = "logos"
+path = "src/main.rs"
+
+[dependencies]
+logos-nlogox = { path = "../logos-nlogox" }
+logos-project = { path = "../logos-project" }

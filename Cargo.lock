@@ -252,6 +252,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "logos-cli"
+version = "0.0.0"
+dependencies = [
+ "logos-nlogox",
+ "logos-project",
+]
+
+[[package]]
 name = "logos-experiment"
 version = "0.0.0"
 dependencies = [
@@ -273,6 +281,7 @@ dependencies = [
 name = "logos-project"
 version = "0.0.0"
 dependencies = [
+ "logos-syntax",
  "thiserror",
  "toml_edit 0.25.17+spec-1.1.0",
 ]
