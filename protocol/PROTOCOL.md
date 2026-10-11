@@ -168,6 +168,24 @@ The reporters are compiled once per distinct string and the compiled form is cac
 
 There is deliberately no `workspace.report` method. Reading a value through `HeadlessWorkspace.report` uses the main random number generator and can change the run.
 
+**`workspace.program`**
+
+The compiled model's declarations and procedures as NetLogo holds them (`org.nlogo.core.Program` and the workspace's procedure table). Used to check `logos-syntax` against NetLogo (Phase 0, B5). Fails with `1005 Busy` during a run.
+
+```
+params: { "workspace": WorkspaceId }
+result: { "globals": [string],              // declared in the code
+          "interfaceGlobals": [string],     // defined by widgets
+          "turtlesOwn": [string], "patchesOwn": [string], "linksOwn": [string],
+          "breeds": [ { "name": string, "singular": string, "isLinkBreed": bool,
+                        "isDirected": bool, "owns": [string] } ],
+          "procedures": [ { "name": string, "isReporter": bool,
+                            "args": [string],   // declared parameters only
+                            "file": string | null } ] }
+```
+
+Names are upper case, as NetLogo stores them. The variable lists leave out NetLogo's built-in variables (`who`, `pcolor`, ...). Breeds list turtle breeds, then link breeds, each in declaration order. For a model with a system dynamics diagram, the globals and procedures NetLogo generates from the diagram are included.
+
 **`workspace.run`**
 
 Runs a command repeatedly, the way a forever button does, and returns immediately. The run continues in the background until one of: the command executes `stop` at the top level of the procedure (NetLogo's forever-button rule, detected the same way BehaviorSpace detects it), `repeat` iterations have completed, `workspace.stop` is called, or a runtime error occurs.

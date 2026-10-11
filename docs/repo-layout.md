@@ -20,6 +20,7 @@ logos/
 │   ├── logos-protocol/        bridge message types (Rust side), generated or hand-kept in sync with protocol/
 │   ├── logos-bridge-client/   starts, supervises and talks to the bridge process
 │   ├── logos-conformance/     corpus manifest, runner, comparison of recorded outputs
+│   ├── logos-experiment/      BehaviorSpace experiments: read from .nlogox, run through the bridge, compare (A3, A6)
 │   ├── logos-cli/             the `logos` binary
 │   └── xtask/                 build automation written in Rust (cargo xtask ...)
 ├── spikes/
@@ -38,6 +39,8 @@ logos/
 │   ├── manifest.toml          model list: source, URL or install path, SHA-256, license, tags (gis, nw, ...)
 │   ├── own/                   Thomas's models, committed if he chooses
 │   │   └── aa4-combined/      primary test model and its data/ files (D-15)
+│   ├── reference/             output recorded from NetLogo itself (A3)
+│   ├── legacy/                .nlogo files and NetLogo GUI conversions for A9 (git-ignored until licenses are recorded)
 │   └── .cache/                downloaded models (git-ignored)
 ├── docs/
 │   ├── decisions.md
@@ -142,6 +145,22 @@ cd bridge
 cd ..
 cargo test -p logos-bridge-client -- --ignored --test-threads=1
 ```
+
+Other Phase 0 checks (each prints a summary line; `docs/phase-0-results.md` records them):
+
+```
+cargo test -p logos-experiment -- --ignored --test-threads=1 --nocapture              # A3, A6
+cargo test -p logos-bridge-client --test extensions -- --ignored --test-threads=1 --nocapture  # A7
+cargo test -p logos-bridge-client --test agents -- --ignored --nocapture              # A5
+cargo test -p logos-bridge-client --test model_tools -- --ignored --test-threads=1 --nocapture # A8, A9
+cargo test -p logos-nlogox --test corpus -- --nocapture                               # B1, B2
+cargo test -p logos-nlogox --test corpus -- --ignored --nocapture                     # B3
+cargo test -p logos-syntax --test corpus -- --nocapture                               # B4
+cargo test -p logos-syntax --test corpus --release -- --nocapture b7                  # B7
+cargo test -p logos-syntax --test corpus -- --ignored --nocapture                     # B5
+```
+
+The Spike B corpus tests read AA4-Combined, the Models Library of the installed NetLogo, and every `.nlogox` under the folders listed in `LOGOS_CORPUS_DIRS` (separated like `PATH`). `LOGOS_WORKERS` sets how many workspaces the B3 and B5 tests use at once (default 4).
 
 The Rust engine tests start the bridge on NetLogo's bundled Java runtime. Set `LOGOS_JAVA` to use a different Java, and `LOGOS_NETLOGO_HOME` if NetLogo is not in the default folder.
 

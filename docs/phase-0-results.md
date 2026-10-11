@@ -111,4 +111,33 @@ A9, `cargo test -p logos-bridge-client --test model_tools a9 -- --ignored` with 
 
 ## Spike B: file format and parser
 
-Not started.
+Measured 2026-10-11 on Linux (cloud, 2 cores, Java 21.0.12; the NetLogo install there has only the `gis` and `nw` extensions). Corpus: C1, the 575 `.nlogox` files of the NetLogo 7.0.4 Models Library; C2, the 12 `.nlogox` test files of the NetLogo repository at `v7.0.4`; C3, AA4-Combined; and the 4 GUI conversions in `corpus/legacy`. 592 files and 3 `.nls` include files in all. C4 (CoMSES) is not assembled yet. Windows runs pending.
+
+| # | Criterion | Result | Status |
+|---|---|---|---|
+| B1 | Unmodified round-trip | 592 of 592 files byte-identical; in every file the parsed spans cover every byte of every element's content | Met (Linux; C4 pending) |
+| B2 | Edit round-trip | Code replaced with itself plus a comment line in all 592 files, and one slider's `max` changed in the 450 that have a slider: each edit changed only the bytes of its own region, and both read back | Met (Linux; C4 pending) |
+| B3 | NetLogo accepts edited files | Every edited file opens in NetLogo 7.0.4 through the bridge with the same result as the original: 522 compile before and after; 70 fail the same way before and after (68 need an extension the Linux install lacks; 2 are NetLogo's own test files without a view, which NetLogo refuses to open) | Met (Linux) |
+| B4 | Lexer is lossless | 592 code sections and 3 `.nls` files, 3.88 MB, 761,254 tokens: joining the tokens reproduces every source, and so does the syntax tree's text. The parser reports no errors in any of them | Met (Linux) |
+| B5 | Structure matches NetLogo | 514 models that compile here and have no system dynamics diagram: globals, `turtles-own`, `patches-own`, `links-own`, breeds and link breeds (with singular names and `-own` variables) and procedures (name, reporter or command, parameters, including `__includes` files) identical to `workspace.program`, 0 differences. 8 system dynamics models not compared (NetLogo adds code generated from the diagram) | Met (Linux) |
+| B6 | Error recovery | Hand-written broken sources (`crates/logos-syntax/tests/parse.rs`): missing `end` before another procedure, before a declaration and at the end of the file; unclosed `[`, stray `]`, `]` closing over an open `(`, unclosed declaration list; unterminated string; code outside procedures. Each is reported at the right span and the rest of the file still parses. Every prefix and suffix of a test model parses without panicking and losslessly | Met |
+| B7 | Speed | Largest source, `Continental Divide.nlogox` (101,131 bytes of code): lex and parse in 2.73 ms (release build, Linux). Windows pending | Met (Linux) |
+
+## Spike B detail
+
+`logos-nlogox` keeps the file's text and an element tree with the byte span of every element, attribute and text run (read with `quick-xml`). Writing an unmodified file returns its bytes; an edit replaces one span and re-reads the file. New text is encoded the way NetLogo 7.0.4's `XMLWriter` writes it:
+
+- Element text is written as a CDATA section only when it contains `<`, `>` or `&`, and as plain text otherwise.
+- Inside CDATA, NetLogo writes `]]>` as `]]`, U+E000, `>`, and its reader turns that back (`XMLElement.CDataEscape`). `logos-nlogox` does the same in both directions.
+- NetLogo's reader skips text that is only whitespace, so a code section containing only whitespace reads as empty.
+- Line ends in new text follow the file (CRLF or LF).
+
+`logos-syntax` follows NetLogo's `TokenLexer` and `Charset`:
+
+- Identifiers may contain ``_.?=*!<>:#+/%$^'&-``, so `'` alone is an identifier. The Long House Valley model's `globals [ ... ' booleans ]` declares globals named `'` and `booleans`, and NetLogo agrees (B5).
+- A number starts with a digit, or with `.` or `-` followed by a digit or by `.` and a digit, and continues with any identifier characters, so `5-3` is one invalid number token.
+- Whitespace is Java's `Character.isWhitespace`, which excludes no-break spaces.
+
+The tree is a `rowan` green tree (D-11). Inside procedure bodies the parser records only bracket and parenthesis groups; expressions are Phase 1 work.
+
+`workspace.program` (PROTOCOL.md) gives NetLogo's own view for B5. NetLogo's `Procedure.args` also lists local variables (`let`) and internal slots such as `_repeatlocal:1`; the bridge reports the declared parameters (`argTokens`).

@@ -66,6 +66,8 @@ Spike A results on Windows (docs/phase-0-results.md): rendered frames on AA4 at 
 
 A hand-written lexer and parser in Rust that produces a lossless syntax tree (every byte, including whitespace and comments, belongs to a token), probably using `rowan`. Tree-sitter may be added later as a separate grammar for highlighting in editors that use it. Spike B confirms.
 
+Spike B result (docs/phase-0-results.md): `logos-syntax` is hand-written on `rowan` 0.17. Over 592 models and 3 `.nls` files the tree's text equals the source, the parser reports no false errors, its declarations and procedures match NetLogo's for all 514 models compared, and the largest model parses in 2.7 ms. Waiting on Thomas to accept.
+
 ## D-12 `gis` and `nw` are in scope for planning — accepted
 
 Both are in the conformance corpus from Phase 0, starting with the Models Library examples `Code Examples/Extensions Examples/gis/GIS General Examples` and `Code Examples/Extensions Examples/nw/NW General Examples`. They run on the reference engine as they are. A native engine (Phase 4) does not need to support them.
