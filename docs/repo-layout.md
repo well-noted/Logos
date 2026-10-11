@@ -15,7 +15,8 @@ logos/
 ├── crates/
 │   ├── logos-syntax/          lexer and lossless syntax tree for NetLogo code
 │   ├── logos-nlogox/          lossless .nlogox reader and writer
-│   ├── logos-project/         project model: model file, __includes, settings, engine pin
+│   ├── logos-project/         projects: logos.toml, file detection (init), checks (check)
+│   ├── logos-secrets/         secrets: OS credential store or encrypted file, .env import
 │   ├── logos-semantic/        symbols, scopes, references (uses primitive tables from the bridge)
 │   ├── logos-protocol/        bridge message types (Rust side), generated or hand-kept in sync with protocol/
 │   ├── logos-bridge-client/   starts, supervises and talks to the bridge process

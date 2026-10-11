@@ -1,0 +1,16 @@
+[package]
+name = "logos-secrets"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "API keys and other secrets for Logos projects: OS credential store, or an encrypted file"
+
+[dependencies]
+argon2 = "0.6"
+chacha20poly1305 = "0.11"
+getrandom = "0.4"
+keyring = "4.2"
+serde_json = "1"
+thiserror = "2"
