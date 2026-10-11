@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use logos_bridge_client::{Bridge, BridgeConfig, find_netlogo_home};
-use logos_project::Project;
 use logos_project::check::{Environment, Finding, Severity, check};
+use logos_project::detect::detect;
+use logos_project::{FileEntry, PROJECT_FILE, Project, Python, Secrets};
 
 /// Checks against this machine.
 struct Machine;
@@ -110,6 +111,33 @@ fn compile(project: &Project, version: &str) -> Finding {
     result
 }
 
+/// The project `logos project init --yes` would write, kept in memory.
+fn detected_project(dir: &Path) -> Result<Project, String> {
+    let model = crate::init::find_model(dir, None)?;
+    let code = crate::init::model_code(dir, &model)?;
+    let d = detect(dir, &model, &code);
+    let mut p = Project::new(dir, &model).map_err(|e| e.to_string())?;
+    for f in d.files.iter().filter(|f| f.role.is_some()) {
+        let mut e = FileEntry::new(&f.path, f.role.unwrap());
+        e.language = f.language.clone();
+        p.set_file(&e).map_err(|e| e.to_string())?;
+    }
+    if let Some(req) = d.requirements {
+        p.set_python(&Python {
+            requirements: Some(req),
+            interpreter: None,
+        });
+    }
+    if !d.secret_names.is_empty() {
+        p.set_secrets(&Secrets {
+            required: Vec::new(),
+            optional: d.secret_names.into_iter().collect(),
+        })
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(p)
+}
+
 pub fn run(args: &[&str]) -> Result<(), String> {
     let mut dir = PathBuf::from(".");
     let mut compile_too = false;
@@ -120,8 +148,17 @@ pub fn run(args: &[&str]) -> Result<(), String> {
             s => dir = PathBuf::from(s),
         }
     }
-    let project = Project::open(&dir)
-        .map_err(|e| format!("{e}\n(run `logos project init {}` first)", dir.display()))?;
+    let project = if dir.join(PROJECT_FILE).exists() {
+        Project::open(&dir).map_err(|e| e.to_string())?
+    } else {
+        let p = detected_project(&dir)?;
+        println!(
+            "No {PROJECT_FILE} in {}; checking the files the model's code refers to. \
+             Run `logos project init` to review and save the list.",
+            dir.display()
+        );
+        p
+    };
     let mut findings = check(&project, &Machine);
     if compile_too {
         let version = project
