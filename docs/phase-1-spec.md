@@ -68,19 +68,26 @@ optional = ["OPENAI_API_KEY"]
 
 Models like MASTOC-LLM need API keys and other environment variables. Logos lets the user set them from inside Logos (Thomas, 2026-10-11) under these rules:
 
-- Values are stored in the operating system's credential store (Windows Credential Manager first; macOS Keychain and the Secret Service API on Linux later), keyed by project and name. They are never written to `logos.toml`, `.nlogox`, run records, logs or crash reports.
+- Values are stored in the operating system's credential store, keyed by project and name: Windows Credential Manager, the macOS Keychain, and the Secret Service API on Linux (GNOME Keyring, KWallet). One cross-platform layer covers all three (for example the `keyring` crate; confirmed in step 4). They are never written to `logos.toml`, `.nlogox`, run records, logs or crash reports.
+- Where no credential store is available (a Linux server without a desktop session, a container), Logos does not fall back to a plain file. The user either passes the variables in the environment that starts Logos, or uses a file encrypted with a passphrase entered once per session.
 - A project can import an existing `.env` file once; Logos then offers to remove the values from the file. It never writes a `.env` file.
 - Values reach the model only as environment variables of the bridge process, and only the names the project declares. The bridge passes them to NetLogo's `py` extension the way it inherits any environment variable.
-- Logos shows a stored value only masked (`sk-…3f2a`). Changing or deleting a value asks for confirmation. Reading a value back in full needs an explicit action and is not offered over the API or the MCP server.
+- Logos shows a stored value masked (`sk-…3f2a`). Changing or deleting a value asks for confirmation.
+- The user can unmask a value on request:
+  - From the CLI, `logos secrets show NAME` prints it only after an interactive confirmation, and refuses when it isn't run in a terminal, so scripts and agents can't use it.
+  - In the desktop app (Phase 3), unmasking first asks the operating system to confirm the user where it offers that (Windows Hello, Touch ID or the account password on macOS, the keyring's unlock prompt on Linux), and otherwise asks for confirmation in Logos. The value is hidden again after 30 seconds, and a copied value is cleared from the clipboard after 30 seconds.
+  - Each unmask is logged with the name and time, never the value.
+  - Unmasking is never offered over the API, the MCP server or to the in-app assistant.
 - Provenance records which secret names a run used, never values. Recorded LLM requests have authentication headers removed before they are written.
 
 ### Success criteria
 
 | # | Criterion | Target |
 |---|---|---|
-| K1 | Set, list (masked), change and delete a secret from the CLI | Works on Windows; value retrievable by the bridge launch only |
+| K1 | Set, list (masked), unmask, change and delete a secret from the CLI | Works on Windows, macOS and Linux with a desktop session; unmask refuses without a terminal |
 | K2 | No secret in any file Logos writes | A test runs MASTOC-LLM with a known fake key and searches every file Logos wrote (project, run records, logs) for it: no match |
 | K3 | `.env` import | Values move into the credential store; the user is offered removal of the file's values |
+| K4 | No credential store | On Linux without a Secret Service, Logos uses the passphrase-encrypted file or environment variables and never writes a value in plain text |
 
 ---
 
@@ -206,7 +213,8 @@ logos lsp                         language server (Part S)
 - The Python client, the local API service and the MCP server (Phase 2; D-03).
 - Jupyter notebooks (D-16).
 - Experiment designs beyond BehaviorSpace's (Latin hypercube, Sobol, Morris; D-08) and sensitivity analysis.
-- The in-app assistant (D-04). Part L records the model's own LLM calls; it is not the assistant.
+- The in-app assistant (D-04) and connecting coding assistants through the MCP server (Phase 2-3). Part L records the model's own LLM calls; it is not the assistant.
+- Logos's own LLM bridge for models (Phase 2). Part L records and replays calls made by any bridge, including MASTOC-LLM's and, later, Logos's.
 - 3D models.
 
 ## Phase 1 is done when
