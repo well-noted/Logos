@@ -303,6 +303,43 @@ pub struct ArgType {
     pub mask: u32,
 }
 
+/// Result of `workspace.program`: the compiled model's declarations and procedures as NetLogo
+/// holds them, names in upper case, NetLogo's built-in variables left out.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgramResult {
+    /// Globals declared in the code.
+    pub globals: Vec<String>,
+    /// Globals defined by interface widgets (sliders, switches, ...).
+    pub interface_globals: Vec<String>,
+    pub turtles_own: Vec<String>,
+    pub patches_own: Vec<String>,
+    pub links_own: Vec<String>,
+    /// Turtle breeds, then link breeds, each in declaration order.
+    pub breeds: Vec<BreedInfo>,
+    pub procedures: Vec<ProcedureInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BreedInfo {
+    pub name: String,
+    pub singular: String,
+    pub is_link_breed: bool,
+    pub is_directed: bool,
+    pub owns: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcedureInfo {
+    pub name: String,
+    pub is_reporter: bool,
+    pub args: Vec<String>,
+    /// The file the procedure is in: empty for the model's code, otherwise an `__includes` file.
+    pub file: Option<String>,
+}
+
 /// Params of `model.convertLegacy`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
