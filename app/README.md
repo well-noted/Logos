@@ -43,6 +43,7 @@ LOGOS_BRIDGE_JAR=<any existing file>
 | `src/launcher.tsx` | Start screen and first launch: finding NetLogo, the engine check |
 | `src/interface.tsx` | Interface tab: toolbar, run strip, widgets, the view, pop-out view |
 | `src/code.tsx`, `src/info.tsx` | Code and Info tabs |
+| `src/editor.tsx` | Interface edit mode: moving, resizing, adding and deleting widgets, property sheets, world settings, undo |
 | `src/inspector.tsx` | Agent inspector, watches, pause when |
 | `src/panels.tsx` | Activity bar, outline, bottom panel (Command Center, Output, Problems, Log, Activity), status bar |
 | `src/settings.tsx`, `src/themes.ts` | Settings, built-in and custom themes (D-32) |

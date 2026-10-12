@@ -7,7 +7,7 @@ import type { Widget } from "./ipc";
 import { bindCanvas, frames } from "./frames";
 import { Icon } from "./icons";
 import {
-  inspect, model, monitors, output, pressButton, running, setSpeed, setWidgetValue, speed, stepModel,
+  applyCode, inspect, model, monitors, notApplied, output, pressButton, running, setSpeed, setWidgetValue, speed, stepModel,
   stopModel, ticks, viewOnTicks, viewPopped,
 } from "./state";
 import { ipc } from "./ipc";
@@ -71,6 +71,7 @@ function Toolbar() {
           <>
             <button class="icon-btn" aria-label="Undo interface change" title="Undo (Ctrl+Z)" disabled={!canUndo.value} onClick={() => undoInterface(false)}>↶</button>
             <button class="icon-btn" aria-label="Redo interface change" title="Redo (Ctrl+Y)" disabled={!canRedo.value} onClick={() => undoInterface(true)}>↷</button>
+            {notApplied.value && <button class="btn small primary" title="Save and reload the model so the changes take effect (Ctrl+Shift+Enter)" onClick={() => applyCode()}>Apply</button>}
           </>
         )}
       </div>

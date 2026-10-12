@@ -540,6 +540,10 @@ enum WidgetOp {
     Delete {
         index: usize,
     },
+    World {
+        index: usize,
+        world: logos_nlogox::widgets::World,
+    },
 }
 
 #[tauri::command]
@@ -569,6 +573,7 @@ async fn model_edit_widget(
                     n.add_widget(&xml).map(|_| ())
                 }
                 WidgetOp::Delete { index } => n.delete_widget(index),
+                WidgetOp::World { index, world } => n.set_world(index, &world),
             };
             r.map_err(|e| e.to_string())
         })
