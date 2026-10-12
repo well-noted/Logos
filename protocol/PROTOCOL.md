@@ -99,14 +99,28 @@ result: { "netlogoVersion": string,          // "NetLogo 7.0.4"
               "agentClass": string,            // e.g. "OTPL", "-T--", as NetLogo writes it
               "blockAgentClass": string | null,
               "introducesContext": bool,
-              "extension": string | null } ] } // e.g. "nw"; null for core primitives
+              "canBeConcise": bool,            // usable by name alone where an anonymous
+                                               // procedure is expected (`foreach xs print`)
+              "extension": string | null } ],  // e.g. "nw"; null for core primitives
+          "agentVariables": { "observer" | "turtle" | "patch" | "link":
+                              [ { "name": string, "type": ArgType } ] },  // built-in, in order
+          "constants": [ { "name": string, "value": Value } ],   // true, false, nobody, e, pi,
+                                                                 // color names
+          "keywords": [string],                // to, to-report, end, globals, ...
+          "breedPrimitives": [ {               // a primitive row as above, plus:
+              "breedKind": "turtle" | "directed-link" | "undirected-link" } ],
+                                               // "name" is a pattern: "create-<breeds>"
+          "typeMasks": { string: int } }       // number, list, command, reporter, reference,
+                                               // commandBlock, reporterBlock, repeatable,
+                                               // optional, codeBlock, symbol, wildcard, and
+                                               // commandPrecedence, normalPrecedence
 
 ArgType: { "name": string, "mask": int }
 ```
 
 `mask` is NetLogo's type bit mask (`org.nlogo.core.Syntax`), which includes the repeatable and optional flags. `name` is NetLogo's own name for the mask (`org.nlogo.core.TypeNames.name`), as its error messages show it, for example `"agent or agentset"` or `"command block (optional)"`. The bridge passes both through without translating.
 
-Core primitives are the names `org.nlogo.parse.TokenMapper` knows, including the internal `__` primitives: 459 in NetLogo 7.0.4. Breed primitives such as `create-<breeds>` are templates in NetLogo and are not listed. Extension primitives are read after a temporary workspace with `extensions [ ... ]` has compiled. An extension NetLogo can't find fails with `-32602` and NetLogo's message. The rows are sorted by name.
+Core primitives are the names `org.nlogo.parse.TokenMapper` knows, including the internal `__` primitives: 459 in NetLogo 7.0.4. Breed primitives such as `create-<breeds>` are templates in NetLogo. They are listed under `breedPrimitives`, one row per pattern and kind of breed, with `<breeds>` standing for the plural name and `<breed>` for the singular. The bridge finds them by declaring one breed of each kind and asking NetLogo's breed handling (`BreedIdentifierHandler`, `TokenMapper.breedInstruction`) which names it derives and what each one is. Keywords other than `to`, `to-report` and `end` include any name ending in `-own`. Extension primitives are read after a temporary workspace with `extensions [ ... ]` has compiled. An extension NetLogo can't find fails with `-32602` and NetLogo's message. The rows are sorted by name.
 
 **`engine.shutdown`**
 

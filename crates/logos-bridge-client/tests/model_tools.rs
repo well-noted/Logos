@@ -40,6 +40,16 @@ fn a8_primitive_table_with_extensions() {
     let bridge = spawn();
     let table = bridge.primitives(&extensions).unwrap();
     assert_eq!(table.netlogo_version, "NetLogo 7.0.4");
+    // The tables the expression parser needs besides the primitives.
+    assert_eq!(table.agent_variables.turtle[0].name, "who");
+    assert!(table.constants.iter().any(|c| c.name == "red"));
+    assert!(table.keywords.iter().any(|k| k == "to-report"));
+    assert!(
+        table
+            .breed_primitives
+            .iter()
+            .any(|b| b.primitive.name == "create-<breeds>")
+    );
     let core = table
         .primitives
         .iter()

@@ -56,6 +56,49 @@ class LegacyAndPrimitivesTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void languageTablesCoverVariablesConstantsAndBreeds() throws Exception {
+        try (TestClient c = new TestClient()) {
+            Map<String, Object> r = TestClient.result(
+                    c.call("engine.primitives", params("extensions", List.of())));
+            Map<String, List<Map<String, Object>>> vars =
+                    (Map<String, List<Map<String, Object>>>) r.get("agentVariables");
+            List<Object> turtle = vars.get("turtle").stream().map(v -> v.get("name"))
+                    .collect(Collectors.toList());
+            assertEquals("who", turtle.get(0));
+            assertTrue(turtle.contains("pen-mode"), turtle.toString());
+            assertTrue(vars.get("patch").stream().anyMatch(v -> v.get("name").equals("pcolor")));
+            assertTrue(vars.get("link").stream().anyMatch(v -> v.get("name").equals("end1")));
+            assertEquals(List.of(), vars.get("observer"));
+
+            Map<String, Map<String, Object>> constants =
+                    ((List<Map<String, Object>>) r.get("constants")).stream().collect(
+                            Collectors.toMap(m -> (String) m.get("name"), m -> m));
+            assertEquals(15.0, constants.get("red").get("value"));
+            assertEquals(true, constants.get("true").get("value"));
+            assertTrue(constants.containsKey("grey") && constants.containsKey("nobody"));
+            assertTrue(((List<?>) r.get("keywords")).contains("to-report"));
+            Map<String, Object> masks = (Map<String, Object>) r.get("typeMasks");
+            long optionalBlock = (Long) masks.get("commandBlock") | (Long) masks.get("optional");
+            assertEquals(540672L, optionalBlock);
+
+            Map<String, Map<String, Object>> breeds =
+                    ((List<Map<String, Object>>) r.get("breedPrimitives")).stream().collect(
+                            Collectors.toMap(m -> m.get("breedKind") + " " + m.get("name")
+                                    + " " + m.get("kind"), m -> m));
+            Map<String, Object> create = breeds.get("turtle create-<breeds> command");
+            // A number and the optional command block.
+            assertEquals(2L, create.get("defaultArgCount"), create.toString());
+            assertEquals(540672L, ((Map<?, ?>) ((List<?>) create.get("args")).get(1)).get("mask"));
+            assertTrue(breeds.containsKey("turtle <breeds>-here reporter"));
+            assertTrue(breeds.containsKey("turtle <breed> reporter"));
+            assertTrue(breeds.containsKey("directed-link create-<breed>-to command"));
+            assertTrue(breeds.containsKey("undirected-link <breed>-neighbors reporter"));
+            assertTrue(!breeds.containsKey("undirected-link create-<breed>-to command"));
+        }
+    }
+
+    @Test
     void corePrimitivesHaveTheirSyntax() throws Exception {
         try (TestClient c = new TestClient()) {
             Map<String, Map<String, Object>> p = primitives(c, List.of());
