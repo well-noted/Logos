@@ -140,7 +140,7 @@ export function CodeTab() {
           <Icon name="check" /> Apply
         </button>
         <span class="state" role="status">
-          {notApplied.value ? <span style="color: var(--warning)">Code changed, not applied</span> : <span class="muted">Applied</span>}
+          {notApplied.value ? <span style="color: var(--warning)">Changes not applied</span> : <span class="muted">Applied</span>}
           {dirty.value ? <span class="muted"> · unsaved</span> : null}
         </span>
         <span style="flex:1" />

@@ -37,7 +37,7 @@ function Menus() {
         const items = COMMANDS.filter((c) => c.menu === name);
         const extra: Command[] = name === "Help"
           ? [{ id: "help.palette", title: "All commands…", menu: "Help" as const, key: "Ctrl+Shift+P", run: () => { paletteOpen.value = true; } }]
-          : name === "Edit" ? [{ id: "edit.note", title: "Undo, redo and find work in the code editor", menu: "Edit" as const, enabled: () => false, run: () => {} }]
+          : name === "Edit" ? [{ id: "edit.note", title: "In the code editor, Ctrl+Z, Ctrl+Y and Ctrl+F work on the code", menu: "Edit" as const, enabled: () => false, run: () => {} }]
           : name === "Tools" ? [{ id: "tools.settings", title: "Settings and themes…", menu: "Tools" as const, run: () => { settingsOpen.value = true; } }]
           : [];
         const all = [...items, ...extra];
@@ -126,7 +126,7 @@ function ModelDocument() {
               <button role="tab" aria-selected={modelTab.value === t.id} onClick={() => { modelTab.value = t.id; }}>{t.label}</button>
             ))}
             <span class="spacer" />
-            {notApplied.value && modelTab.value !== "code" && <span class="note">Code changed, not applied</span>}
+            {notApplied.value && modelTab.value !== "code" && <span class="note">Changes not applied</span>}
             <button class="icon-btn" aria-label="Inspectors" title="Inspectors (Ctrl+I)" aria-pressed={rightOpen.value}
               onClick={() => { rightOpen.value = !rightOpen.value; }}><Icon name="panelRight" /></button>
           </div>

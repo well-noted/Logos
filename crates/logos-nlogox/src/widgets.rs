@@ -566,6 +566,114 @@ impl Nlogox {
     }
 }
 
+/// The XML of a new widget of `kind` at (x, y), with the sizes and defaults Logos uses for new
+/// widgets. `name` is the variable for sliders, switches, choosers and input boxes, and the
+/// commands or reporter for buttons and monitors. Attributes are in the order NetLogo 7.0.4
+/// writes them in the files it saves.
+pub fn new_widget_xml(kind: &str, x: i32, y: i32, name: &str) -> Option<String> {
+    let a = |s: &str| crate::text::encode_attribute(s, b'"');
+    let t = |s: &str| crate::text::encode_content(s, "\n");
+    Some(match kind {
+        "button" => format!(
+            r#"<button x="{x}" y="{y}" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="90">{}</button>"#,
+            t(name)
+        ),
+        "slider" => format!(
+            r#"<slider x="{x}" step="1" y="{y}" max="100" width="170" display="{n}" height="50" min="0" direction="Horizontal" default="50.0" variable="{n}"></slider>"#,
+            n = a(name)
+        ),
+        "switch" => format!(
+            r#"<switch x="{x}" y="{y}" height="40" on="false" variable="{n}" width="150" display="{n}"></switch>"#,
+            n = a(name)
+        ),
+        "chooser" => format!(
+            r#"<chooser x="{x}" y="{y}" height="60" variable="{n}" current="0" width="150" display="{n}">
+  <choice type="string" value="first"></choice>
+  <choice type="string" value="second"></choice>
+</chooser>"#,
+            n = a(name)
+        ),
+        "input" => format!(
+            r#"<input x="{x}" y="{y}" height="60" variable="{n}" multiline="false" width="170" type="string"></input>"#,
+            n = a(name)
+        ),
+        "monitor" => format!(
+            r#"<monitor x="{x}" precision="17" y="{y}" height="60" fontSize="11" width="100">{}</monitor>"#,
+            t(name)
+        ),
+        "plot" => format!(
+            r#"<plot x="{x}" autoPlotX="true" yMax="10.0" autoPlotY="true" y="{y}" xMin="0.0" height="160" legend="false" xMax="10.0" yMin="0.0" width="230" display="{n}">
+  <setup></setup>
+  <update></update>
+  <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+    <setup></setup>
+    <update></update>
+  </pen>
+</plot>"#,
+            n = a(name)
+        ),
+        "output" => {
+            format!(r#"<output x="{x}" y="{y}" height="120" fontSize="12" width="250"></output>"#)
+        }
+        "note" => format!(
+            r#"<note x="{x}" y="{y}" height="40" fontSize="12" width="150" markdown="false">{}</note>"#,
+            t(name)
+        ),
+        _ => return None,
+    })
+}
+
+impl Nlogox {
+    /// Adds a widget at the end of the `<widgets>` section and returns its index.
+    pub fn add_widget(&mut self, xml: &str) -> Result<usize, WidgetEditError> {
+        let path = self
+            .section_path("widgets")
+            .ok_or(EditError::NoSection("widgets".into()))?;
+        // Indent the lines inside a multi-line element like the widgets around it.
+        let indent = self
+            .widgets()
+            .first()
+            .and_then(|w| {
+                let start = w.span.start;
+                let line = self.text()[..start].rfind('\n').map_or(0, |i| i + 1);
+                let lead = &self.text()[line..start];
+                lead.chars()
+                    .all(char::is_whitespace)
+                    .then(|| lead.to_string())
+            })
+            .unwrap_or_else(|| "    ".into());
+        let xml = xml.replace('\n', &format!("\n{indent}"));
+        self.insert_element(&path, None, &xml)?;
+        Ok(self.widgets().len() - 1)
+    }
+
+    /// Removes a widget.
+    pub fn delete_widget(&mut self, index: usize) -> Result<(), WidgetEditError> {
+        let path = self.widget_element_path(index)?;
+        self.remove_element(&path)?;
+        Ok(())
+    }
+
+    /// Sets one attribute of a widget, as written in the file (`display`, `min`, `forever`).
+    pub fn set_widget_attribute(
+        &mut self,
+        index: usize,
+        name: &str,
+        value: &str,
+    ) -> Result<(), WidgetEditError> {
+        let path = self.widget_element_path(index)?;
+        self.set_attribute(&path, name, value)?;
+        Ok(())
+    }
+
+    /// Sets the text of a widget: a button's commands, a monitor's reporter, a note's text.
+    pub fn set_widget_text(&mut self, index: usize, text: &str) -> Result<(), WidgetEditError> {
+        let path = self.widget_element_path(index)?;
+        self.set_text(&path, text)?;
+        Ok(())
+    }
+}
+
 /// A value set from the Interface tab.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize))]
@@ -746,6 +854,58 @@ mod tests {
                 ))
                 .count()
         );
+    }
+
+    #[test]
+    fn add_and_delete_widgets_keep_the_rest() {
+        let mut f = Nlogox::parse(FILE).unwrap();
+        let n = f.widgets().len();
+        for kind in [
+            "button", "slider", "switch", "chooser", "input", "monitor", "plot", "output", "note",
+        ] {
+            let xml = new_widget_xml(kind, 10, 20, "new-thing").unwrap();
+            let i = f.add_widget(&xml).unwrap();
+            let w = f.typed_widget(i).unwrap();
+            assert!(w.problems.is_empty(), "{kind}: {w:?}");
+            assert_ne!(w.data, WidgetData::Unknown, "{kind}");
+            assert_eq!((w.x, w.y), (10, 20));
+        }
+        assert_eq!(f.widgets().len(), n + 9);
+        // The new lines are indented like the others.
+        assert!(f.text().contains("\n    <button x=\"10\""));
+        assert!(
+            f.text()
+                .contains("\n      <choice type=\"string\" value=\"first\">")
+        );
+        for _ in 0..9 {
+            f.delete_widget(n).unwrap();
+        }
+        assert_eq!(f.text(), FILE);
+    }
+
+    #[test]
+    fn widget_text_and_attributes() {
+        let mut f = Nlogox::parse(FILE).unwrap();
+        f.set_widget_text(2, "go\nif ticks > 5 [ stop ]").unwrap();
+        f.set_widget_attribute(2, "display", "Run <fast>").unwrap();
+        let w = f.typed_widget(2).unwrap();
+        assert_eq!(w.display.as_deref(), Some("Run <fast>"));
+        assert!(
+            matches!(&w.data, WidgetData::Button { source, .. } if source == "go\nif ticks > 5 [ stop ]")
+        );
+        assert!(f.delete_widget(99).is_err());
+    }
+
+    #[test]
+    fn crlf_files_get_crlf() {
+        let crlf = FILE.replace('\n', "\r\n");
+        let mut f = Nlogox::parse(crlf.clone()).unwrap();
+        let i = f
+            .add_widget(&new_widget_xml("chooser", 1, 1, "c").unwrap())
+            .unwrap();
+        assert!(!f.text().replace("\r\n", "").contains('\n'));
+        f.delete_widget(i).unwrap();
+        assert_eq!(f.text(), crlf);
     }
 
     #[test]

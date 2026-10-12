@@ -5,6 +5,7 @@ import {
   activityView, applyCode, bottomOpen, bottomTab, closeModel, model, modelTab, openModelDialog,
   paletteOpen, rightOpen, running, saveModel, settingsOpen, stepModel, stopModel, viewPopped, engine,
 } from "./state";
+import { canRedo, canUndo, editMode, undoInterface } from "./editor";
 
 export interface Command {
   id: string;
@@ -12,6 +13,8 @@ export interface Command {
   menu: "File" | "Edit" | "View" | "Model" | "Run" | "Tools" | "Help";
   key?: string;
   enabled?: () => boolean;
+  /** False: the key is left to text fields and the code editor when one has focus. */
+  textKey?: boolean;
   run: () => void | Promise<void>;
 }
 
@@ -39,6 +42,12 @@ export const COMMANDS: Command[] = [
     run: () => { modelTab.value = "interface"; viewPopped.value = false; rightOpen.value = false; bottomOpen.value = true; bottomTab.value = "command"; } },
   { id: "view.layoutCodeRun", title: "Layout: Code and run", menu: "View", enabled: hasModel,
     run: () => { modelTab.value = "code"; viewPopped.value = true; rightOpen.value = true; } },
+  { id: "edit.undo", title: "Undo interface change", menu: "Edit", key: "Ctrl+Z", textKey: false,
+    enabled: () => editMode.value && canUndo.value, run: () => undoInterface(false) },
+  { id: "edit.redo", title: "Redo interface change", menu: "Edit", key: "Ctrl+Y", textKey: false,
+    enabled: () => editMode.value && canRedo.value, run: () => undoInterface(true) },
+  { id: "edit.toggle", title: "Edit the interface", menu: "Edit", key: "Ctrl+E", enabled: hasModel,
+    run: () => { modelTab.value = "interface"; editMode.value = !editMode.value; } },
   { id: "model.apply", title: "Apply code changes", menu: "Model", key: "Ctrl+Shift+Enter", enabled: hasModel, run: () => applyCode() },
   { id: "run.step", title: "Step one tick", menu: "Run", key: "F10", enabled: () => hasModel() && !running.value, run: () => stepModel() },
   { id: "run.pause", title: "Pause", menu: "Run", key: "F6", enabled: () => !!running.value, run: () => stopModel() },
@@ -68,7 +77,11 @@ export function installShortcuts() {
     if (!k) return;
     const c = COMMANDS.find((c) => c.key === k);
     if (!c) return;
-    // Let editors keep their own Ctrl+Z, Ctrl+F and the like; only our keys are taken.
+    // Text fields and the code editor keep their own keys for undo and the like.
+    const t = e.target as HTMLElement | null;
+    const editable = !!t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
+    if (c.textKey === false && editable) return;
+    if (c.enabled && !c.enabled()) return;
     e.preventDefault();
     runCommand(c);
   });
