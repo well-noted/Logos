@@ -29,3 +29,8 @@ desktop.ini
 /corpus/own/*/results/
 /test-reports/
 /docs/handoffs/
+
+# Desktop app front end (app/README.md)
+/app/node_modules/
+/app/dist/
+/app/dist-test/
