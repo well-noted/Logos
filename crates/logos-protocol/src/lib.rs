@@ -135,7 +135,7 @@ pub struct HelloParams<'a> {
     pub client: &'a str,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HelloResult {
     pub protocol_version: u64,
@@ -456,7 +456,7 @@ pub struct ConvertLegacyParams<'a> {
 }
 
 /// Result of `model.convertLegacy`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConvertLegacyResult {
     pub output_path: String,
