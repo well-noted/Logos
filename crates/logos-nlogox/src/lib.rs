@@ -10,11 +10,13 @@
 
 pub mod text;
 mod tree;
+pub mod widgets;
 
 use std::ops::Range;
 
 pub use text::{DecodeError, Decoded};
 pub use tree::{Attribute, Element, Node, ParseError};
+pub use widgets::{Widget, WidgetData, WidgetEditError, WidgetValue};
 
 /// An `.nlogox` file.
 #[derive(Debug, Clone)]
