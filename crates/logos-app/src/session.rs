@@ -168,6 +168,26 @@ struct Doc {
     /// File texts before each interface edit, for undo; most recent last.
     undo: Vec<String>,
     redo: Vec<String>,
+    /// The file's modification time and size when it was last read or written, to notice
+    /// changes made by other programs.
+    disk: Option<(SystemTime, u64)>,
+}
+
+fn disk_stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+/// A model file changed on disk.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskChange {
+    pub id: u64,
+    /// True: the model had no unsaved edits and was reloaded. False: it has unsaved edits,
+    /// and the user chooses which to keep.
+    pub reloaded: bool,
+    /// The file is gone (deleted or moved).
+    pub missing: bool,
 }
 
 pub struct Session {
@@ -602,6 +622,7 @@ impl Sessions {
                 applied_code,
                 undo: Vec::new(),
                 redo: Vec::new(),
+                disk: disk_stamp(path),
             }),
             frames: Mutex::new(None),
             run: Mutex::new(RunControl::default()),
@@ -973,7 +994,105 @@ impl Sessions {
         crate::settings::write_atomically(&s.path, text.as_bytes())
             .map_err(|e| AppError::new(format!("{}: {e}", s.path.display())))?;
         doc.saved_text = text;
+        doc.disk = disk_stamp(&s.path);
         Ok(())
+    }
+
+    /// Every open model's path, current text, and whether it has unsaved edits; for autosave.
+    pub fn texts(&self) -> Vec<(PathBuf, String, bool)> {
+        let models: Vec<Arc<Session>> = self.models.lock().unwrap().values().cloned().collect();
+        models
+            .iter()
+            .map(|s| {
+                let doc = s.doc.lock().unwrap();
+                let text = doc.nlogox.text().to_string();
+                let dirty = text != doc.saved_text;
+                (s.path.clone(), text, dirty)
+            })
+            .collect()
+    }
+
+    /// Looks for open models changed on disk by another program. A model without unsaved
+    /// edits is reloaded; the others are reported once per change.
+    pub fn disk_changes(&self) -> Vec<DiskChange> {
+        let models: Vec<Arc<Session>> = self.models.lock().unwrap().values().cloned().collect();
+        let mut out = Vec::new();
+        for s in models {
+            let stamp = disk_stamp(&s.path);
+            let mut doc = s.doc.lock().unwrap();
+            if stamp == doc.disk {
+                continue;
+            }
+            doc.disk = stamp;
+            let Some(_) = stamp else {
+                out.push(DiskChange {
+                    id: s.id,
+                    reloaded: false,
+                    missing: true,
+                });
+                continue;
+            };
+            let Ok(text) = std::fs::read_to_string(&s.path) else {
+                continue;
+            };
+            if text == doc.saved_text {
+                continue; // touched, or our own save
+            }
+            let dirty = doc.nlogox.text() != doc.saved_text;
+            if !dirty {
+                match Nlogox::parse(text.clone()) {
+                    Ok(n) => {
+                        doc.nlogox = n;
+                        doc.saved_text = text;
+                        doc.undo.clear();
+                        doc.redo.clear();
+                    }
+                    // Half-written by the other program, perhaps; look again next time.
+                    Err(_) => {
+                        doc.disk = None;
+                        continue;
+                    }
+                }
+            }
+            out.push(DiskChange {
+                id: s.id,
+                reloaded: !dirty,
+                missing: false,
+            });
+        }
+        out
+    }
+
+    /// Replaces the model's text with the file on disk, dropping unsaved edits.
+    pub fn reload(&self, id: u64) -> AppResult<ModelView> {
+        let s = self.get(id)?;
+        let text = std::fs::read_to_string(&s.path)
+            .map_err(|e| AppError::new(format!("{}: {e}", s.path.display())))?;
+        let n = Nlogox::parse(text.clone()).map_err(|e| AppError::new(e.to_string()))?;
+        {
+            let mut doc = s.doc.lock().unwrap();
+            doc.nlogox = n;
+            doc.saved_text = text;
+            doc.disk = disk_stamp(&s.path);
+            doc.undo.clear();
+            doc.redo.clear();
+        }
+        Ok(s.view(true, Vec::new(), None))
+    }
+
+    /// Puts recovered text in place of the model's text, as unsaved edits.
+    pub fn restore(&self, id: u64, text: String) -> AppResult<ModelView> {
+        let s = self.get(id)?;
+        let n = Nlogox::parse(text).map_err(|e| AppError::new(e.to_string()))?;
+        {
+            let mut doc = s.doc.lock().unwrap();
+            // Undo keeps the code as the editor has it, so it can't undo a restore; start a
+            // new history instead.
+            doc.undo.clear();
+            doc.redo.clear();
+            doc.nlogox = n;
+        }
+        Ok(s.view(true, Vec::new(), None))
     }
 
     /// Applies edited code to the interactive workspace. Until `workspace.recompile` (G5)
