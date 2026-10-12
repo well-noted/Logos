@@ -7,15 +7,17 @@ import java.util.HashMap;
 import java.util.Map;
 import org.nlogo.agent.AgentIterator;
 import org.nlogo.agent.AgentSet;
+import org.nlogo.agent.Link;
 import org.nlogo.agent.Turtle;
 import org.nlogo.agent.World;
 import org.nlogo.api.Color;
 import org.nlogo.core.LogoList;
 import org.nlogo.core.Shape;
+import org.nlogo.core.ShapeList;
 
 /**
- * Agent-state frames (PROTOCOL.md section 6.2): patch colors and one column per turtle
- * variable. Must be called on the workspace's job thread between iterations.
+ * Agent-state frames (PROTOCOL.md section 6.2), layout version 1: patch colors, one column per
+ * turtle variable, and one column per link variable. Must be called on the workspace's job thread between iterations.
  *
  * <p>Nothing here draws random numbers: patch colors come from the array NetLogo's renderer
  * uses ({@code World.patchColors}), and turtles are read with {@code TreeAgentSet.iterator},
@@ -27,6 +29,14 @@ final class AgentState {
     /** Bytes per turtle: who, xcor, ycor, heading, color, size, shape, breed, hidden. */
     static final int TURTLE_BYTES = 8 + 8 + 8 + 8 + 4 + 8 + 2 + 2 + 1;
 
+    /**
+     * Bytes per link: end1, end2, color, thickness, shape, breed, hidden, directed.
+     */
+    static final int LINK_BYTES = 8 + 8 + 4 + 8 + 2 + 2 + 1 + 1;
+
+    /** The layout version byte that follows the common header (protocol 1). */
+    static final byte LAYOUT_VERSION = 1;
+
     private AgentState() {}
 
     /**
@@ -36,13 +46,16 @@ final class AgentState {
         int[] patchArgb = world.patchColors();
         int patchCount = patchArgb.length;
         int turtleCount = world.turtles().count();
-        ByteBuffer buf = ByteBuffer.allocate(ViewFrame.HEADER_BYTES + 20 + patchCount * 4 + 4
-                + turtleCount * TURTLE_BYTES).order(ByteOrder.LITTLE_ENDIAN);
+        int linkCount = world.links().count();
+        ByteBuffer buf = ByteBuffer.allocate(ViewFrame.HEADER_BYTES + 1 + 20 + patchCount * 4
+                + 4 + turtleCount * TURTLE_BYTES + 4 + linkCount * LINK_BYTES)
+                .order(ByteOrder.LITTLE_ENDIAN);
         buf.put(TYPE_AGENTS);
         buf.putInt((int) workspace);
         buf.putInt((int) run);
         buf.putLong(sequence);
         buf.putDouble(ticks);
+        buf.put(LAYOUT_VERSION);
 
         buf.putInt(patchCount);
         buf.putInt(world.minPxcor());
@@ -79,7 +92,7 @@ final class AgentState {
         for (Turtle t : turtles) {
             buf.putDouble(t.size());
         }
-        Map<String, Integer> shapes = shapeIndexes(world);
+        Map<String, Integer> shapes = shapeIndexes(world.turtleShapeList());
         for (Turtle t : turtles) {
             buf.putShort((short) shapes.getOrDefault(t.shape(), 0).intValue());
         }
@@ -89,6 +102,40 @@ final class AgentState {
         }
         for (Turtle t : turtles) {
             buf.put((byte) (t.hidden() ? 1 : 0));
+        }
+
+        // Links in the order of the links agentset (by end1, end2 and breed), which is fixed.
+        Link[] links = new Link[linkCount];
+        AgentIterator li = world.links().iterator();
+        for (int i = 0; i < linkCount; i++) {
+            links[i] = (Link) li.next();
+        }
+        buf.putInt(linkCount);
+        for (Link l : links) {
+            buf.putDouble(l.end1().id());
+        }
+        for (Link l : links) {
+            buf.putDouble(l.end2().id());
+        }
+        for (Link l : links) {
+            putRgba(buf, argb(l.color()));
+        }
+        for (Link l : links) {
+            buf.putDouble(l.lineThickness());
+        }
+        Map<String, Integer> linkShapes = shapeIndexes(world.linkShapeList());
+        for (Link l : links) {
+            buf.putShort((short) linkShapes.getOrDefault(l.shape(), 0).intValue());
+        }
+        Map<AgentSet, Integer> linkBreeds = linkBreedIndexes(world);
+        for (Link l : links) {
+            buf.putShort((short) linkBreeds.getOrDefault(l.getBreed(), 0).intValue());
+        }
+        for (Link l : links) {
+            buf.put((byte) (l.hidden() ? 1 : 0));
+        }
+        for (Link l : links) {
+            buf.put((byte) (l.isDirectedLink() ? 1 : 0));
         }
         return buf.array();
     }
@@ -112,9 +159,9 @@ final class AgentState {
     }
 
     /** Shape name to index in NetLogo's shape list order: "default" first, then by name. */
-    static Map<String, Integer> shapeIndexes(World world) {
+    static Map<String, Integer> shapeIndexes(ShapeList list) {
         Map<String, Integer> m = new HashMap<>();
-        scala.collection.Iterator<Shape> it = world.turtleShapeList().shapes().iterator();
+        scala.collection.Iterator<Shape> it = list.shapes().iterator();
         for (int i = 0; it.hasNext(); i++) {
             m.put(it.next().name(), i);
         }
@@ -128,6 +175,17 @@ final class AgentState {
         scala.collection.Iterator<String> it = world.program().breeds().keysIterator();
         for (int i = 1; it.hasNext(); i++) {
             m.put(world.getBreed(it.next()), i);
+        }
+        return m;
+    }
+
+    /** {@code links} is 0; link breeds follow in declaration order from 1. */
+    private static Map<AgentSet, Integer> linkBreedIndexes(World world) {
+        Map<AgentSet, Integer> m = new HashMap<>();
+        m.put(world.links(), 0);
+        scala.collection.Iterator<String> it = world.program().linkBreeds().keysIterator();
+        for (int i = 1; it.hasNext(); i++) {
+            m.put(world.getLinkBreed(it.next()), i);
         }
         return m;
     }

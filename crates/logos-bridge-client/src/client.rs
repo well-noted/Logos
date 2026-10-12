@@ -16,8 +16,10 @@ use logos_protocol::experiment::{
 use logos_protocol::{
     CommandParams, ConvertLegacyParams, ConvertLegacyResult, DataFrame, HelloParams, HelloResult,
     Incoming, Kind, ObserveParams, ObserveResult, OpenParams, OpenResult, PROTOCOL_VERSION,
-    PrimitivesParams, PrimitivesResult, ProgramResult, Request, RpcError, RunFinished, RunParams,
-    RunStreams, WorkspaceId, WorkspaceParams, read_frame, write_frame,
+    PlotsResult, PrimitivesParams, PrimitivesResult, ProgramResult, RecompileParams,
+    RecompileResult, Request, RpcError, RunFinished, RunOptions, RunParams, RunSettings,
+    RunStreams, SnapshotParams, SnapshotSpec, WorkspaceId, WorkspaceParams, read_frame,
+    write_frame,
 };
 use logos_protocol::{ExperimentCommandResult, LabRunResult, LoadedExperiment};
 use serde::Serialize;
@@ -343,10 +345,104 @@ impl Bridge {
     ) -> Result<(), ClientError> {
         self.call(
             "workspace.command",
-            CommandParams { workspace, source },
+            CommandParams {
+                workspace,
+                source,
+                snapshot: None,
+            },
             timeout,
         )?;
         Ok(())
+    }
+
+    /// Runs commands, then sends the view and agent state as snapshot frames (run 0) when no
+    /// run is active (protocol 1, G15). During a run the commands run between two iterations
+    /// (G1), and the run's own frames show the result.
+    pub fn command_and_snapshot(
+        &self,
+        workspace: WorkspaceId,
+        source: &str,
+        snapshot: SnapshotSpec,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        self.call(
+            "workspace.command",
+            CommandParams {
+                workspace,
+                source,
+                snapshot: Some(snapshot),
+            },
+            timeout,
+        )?;
+        Ok(())
+    }
+
+    /// Sends the current view and agent state as frames with run number 0 (G15); between two
+    /// iterations when the workspace is running.
+    pub fn snapshot(
+        &self,
+        workspace: WorkspaceId,
+        view: bool,
+        agents: bool,
+    ) -> Result<(), ClientError> {
+        self.call(
+            "workspace.snapshot",
+            SnapshotParams {
+                workspace,
+                view,
+                agents,
+            },
+            DEFAULT_TIMEOUT,
+        )?;
+        Ok(())
+    }
+
+    /// Changes a run in progress (G2): its pace, stop condition and streams. Returns whether a
+    /// run was there to change.
+    pub fn run_settings(
+        &self,
+        workspace: WorkspaceId,
+        settings: &RunSettings,
+    ) -> Result<bool, ClientError> {
+        let v = self.call(
+            "workspace.runSettings",
+            settings.params(workspace),
+            DEFAULT_TIMEOUT,
+        )?;
+        Ok(v.get("applied")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false))
+    }
+
+    /// Installs new code in the workspace the way NetLogo's Check button does, keeping the
+    /// world (G5). With `dry_run`, only says what the world would lose.
+    pub fn recompile(
+        &self,
+        workspace: WorkspaceId,
+        source: &str,
+        dry_run: bool,
+        interface_globals: Option<&[String]>,
+    ) -> Result<RecompileResult, ClientError> {
+        self.call_typed(
+            "workspace.recompile",
+            RecompileParams {
+                workspace,
+                source,
+                dry_run,
+                interface_globals,
+            },
+            DEFAULT_TIMEOUT,
+        )
+    }
+
+    /// Every plot with its points (G4). From then on the bridge sends `run.plots`
+    /// notifications with the changes.
+    pub fn plots(&self, workspace: WorkspaceId) -> Result<PlotsResult, ClientError> {
+        self.call_typed(
+            "workspace.plots",
+            WorkspaceParams { workspace },
+            DEFAULT_TIMEOUT,
+        )
     }
 
     /// Evaluates reporters without affecting the run (D-14).
@@ -472,6 +568,19 @@ impl Bridge {
         repeat: Option<u64>,
         stream: &RunStreams,
     ) -> Result<u64, ClientError> {
+        self.run_with(workspace, source, repeat, stream, &RunOptions::default())
+    }
+
+    /// Like [`run`](Self::run), with a delay after each iteration and a stop condition
+    /// (protocol 1, G2 and G6).
+    pub fn run_with(
+        &self,
+        workspace: WorkspaceId,
+        source: &str,
+        repeat: Option<u64>,
+        stream: &RunStreams,
+        options: &RunOptions,
+    ) -> Result<u64, ClientError> {
         let v = self.call(
             "workspace.run",
             RunParams {
@@ -479,6 +588,10 @@ impl Bridge {
                 source,
                 repeat,
                 stream,
+                delay_millis: options.delay_millis,
+                speed: options.speed,
+                stop_when: options.stop_when.as_deref(),
+                agents: None,
             },
             DEFAULT_TIMEOUT,
         )?;

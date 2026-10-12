@@ -38,7 +38,7 @@ final class TestClient implements AutoCloseable {
         thread.setDaemon(true);
         thread.start();
         Map<String, Object> hello = new LinkedHashMap<>();
-        hello.put("protocolVersion", 0L);
+        hello.put("protocolVersion", Bridge.PROTOCOL_VERSION);
         hello.put("client", "TestClient");
         result(call("engine.hello", hello));
     }

@@ -1,6 +1,6 @@
 # Logos bridge protocol
 
-Version: **0** (Phase 0, unstable). Any change to this file changes the protocol for both sides. A PR that changes it also updates `crates/logos-protocol` and `bridge/` in the same PR.
+Version: **1** (Phase 2). Protocol 1 adds snapshots, commands and settings during a run, stop conditions, on-ticks streams and printed output; sections marked "protocol 1" describe them. Any change to this file changes the protocol for both sides. A PR that changes it also updates `crates/logos-protocol` and `bridge/` in the same PR.
 
 This document defines how a Logos process (the **client**, written in Rust) talks to the JVM bridge (the **bridge**, written in Java, running NetLogo's `HeadlessWorkspace`).
 
@@ -55,7 +55,8 @@ The first request must be `engine.hello`. The bridge rejects every other method 
 ## 4. Threading and ordering
 
 - Each workspace has one job thread owned by the bridge. Every request that touches a workspace runs on that thread, in the order the requests arrived.
-- While a workspace is running (`workspace.run` or `experiment.run`), it accepts only `workspace.stop`, `workspace.observe` and `workspace.dispose`. Other requests for that workspace fail with `1005 Busy`. `workspace.observe` during a `workspace.run` is answered between two iterations of the run command; during an `experiment.run` it is answered when the run ends.
+- While a workspace runs a `workspace.run`, it accepts `workspace.stop`, `workspace.observe`, `workspace.command`, `workspace.snapshot`, `workspace.runSettings` and `workspace.dispose` (protocol 1). `workspace.observe`, `workspace.command`, `workspace.snapshot` and `workspace.runSettings` are carried out between two iterations, in arrival order, and answered then. Other requests fail with `1005 Busy`.
+- While a workspace runs an `experiment.run`, it accepts only `workspace.stop`, `workspace.observe` (answered when the run ends) and `workspace.dispose`.
 - Requests for different workspaces run in parallel.
 - `engine.*` and `model.*` requests run on a separate bridge thread and never wait for a workspace.
 
@@ -68,8 +69,8 @@ Types used below: `WorkspaceId` is a positive integer. `Value` is defined in sec
 **`engine.hello`**
 
 ```
-params: { "protocolVersion": 0, "client": string }
-result: { "protocolVersion": 0, "bridgeVersion": string, "netlogoVersion": string | null,
+params: { "protocolVersion": 1, "client": string }
+result: { "protocolVersion": 1, "bridgeVersion": string, "netlogoVersion": string | null,
           "javaVersion": string, "javaVendor": string,
           "extensionsDirs": [string], "modelsDir": string }
 ```
@@ -159,12 +160,17 @@ params: { "contents": string, "format": "nlogox" }
 
 **`workspace.command`**
 
-Runs NetLogo commands as the observer. This is the only method that may advance the model's main random number generator (`world.mainRNG`).
+Runs NetLogo commands as the observer. This and the run commands are the only things that may advance the model's main random number generator (`world.mainRNG`).
 
 ```
-params: { "workspace": WorkspaceId, "source": string }
+params: { "workspace": WorkspaceId, "source": string,
+          "snapshot"?: { "view": bool, "agents": bool } }      // protocol 1
 result: {}
 ```
+
+During a `workspace.run`, the commands run between two iterations, on the main random number generator, in arrival order, and the response is sent when they have run (G1). A run with queued commands gives the same results as the same commands sent between `repeat 1` runs.
+
+`snapshot` (protocol 1, G15): when no run is active, the bridge sends a snapshot (see `workspace.snapshot`) after the commands, also when they failed with a runtime error. During a run it is ignored; the run's own frames show the result.
 
 Errors: `1001 CompilerError`, `1002 RuntimeError`.
 
@@ -181,6 +187,25 @@ result: { "errors": [ { "message": string, "span": SourceSpan } ] }
 ```
 
 Offsets in the span are UTF-16 code units into `source`, or into the include file named by `file`.
+
+**`workspace.recompile`** (protocol 1, G5)
+
+Installs `source` as the model's code section in the workspace, the way NetLogo's Check button does (netlogo-gui `CompilerManager` at v7.0.4), without reopening the model. The world is kept: variables keep their values by name, variables the new code no longer declares lose theirs, variables it adds start at 0, and turtles and links of a breed it no longer declares die. Plot code is compiled again. `losses` lists what the world loses, so the app can warn first.
+
+With `"dryRun": true` the source is compiled and `losses` is computed, but nothing in the workspace changes. `interfaceGlobals` works as in `workspace.check`.
+
+```
+params: { "workspace": WorkspaceId, "source": string, "dryRun"?: bool,
+          "interfaceGlobals"?: [string] }
+result: { "applied": bool, "worldCleared": false,
+          "losses": [ { "kind": "breed" | "linkBreed", "name": string, "agents": int }
+                    | { "kind": "global" | "turtleVariable" | "patchVariable" | "linkVariable", "name": string }
+                    | { "kind": "breedVariable", "breed": string, "name": string } ] }
+```
+
+- Names are as NetLogo stores them (upper case).
+- `worldCleared` is always false; NetLogo's Check never clears the world. It is in the result so a later engine that does can say so.
+- A compile error: `1001` with the span, and the workspace keeps its code. During a run: `1005` (Busy); the client stops the run first, as NetLogo's Check stops forever buttons.
 
 **`workspace.references`**
 
@@ -238,19 +263,73 @@ params: { "workspace": WorkspaceId,
           "source": string,                    // usually "go"
           "repeat": int | null,                // null = until stopped
           "stream": {
-             "view": { "everyTicks": int, "maxFps": number } | null,
-             "agents": { "everyTicks": int, "maxFps": number } | null,
-             "observe": { "reporters": [string], "everyTicks": int } | null } }
+             "view": Stream | null,
+             "agents": Stream | null,
+             "observe": { "reporters": [string], "everyTicks": int } | null },
+          "speed"?: number,                    // protocol 1: NetLogo's speed slider, -50 to 50
+          "delayMillis"?: number,              // protocol 1: pause after each iteration
+          "stopWhen"?: string,                 // protocol 1: a reporter, see below
+          "agents"?: { "kind": "observer" } }  // protocol 1, D-26
 result: { "run": int }
+
+Stream: { "everyTicks": int, "maxFps": number, "update"?: "iteration" | "ticks" }
 ```
 
 - `view`: send a view frame (section 6.1) after an iteration when at least `everyTicks` ticks have passed since the last frame and at least `1/maxFps` seconds have passed. Frames are rendered on the job thread between iterations. The first frame (sequence 0) shows the state before the first iteration, and a final frame is always sent when the run ends, so the client sees the end state. `everyTicks` defaults to 1 and `maxFps` to 30.
 - `agents`: send an agent-state frame (section 6.2) under the same rule, with the same first and final frames.
 - `observe`: send a `run.observed` notification every `everyTicks` ticks, with values computed as in `workspace.observe`.
+- `update` (protocol 1): `"iteration"` (the default) sends frames under the rule above; `"ticks"` also requires the tick counter to have changed since the last frame, as NetLogo's "on ticks" view updates. NetLogo's "continuous" updates, which redraw inside a procedure, are not offered (D-30).
+- `speed` (protocol 1, G2): paces the run as NetLogo's GUI does at that position of its speed slider (`window/UpdateManager.scala` at `v7.0.4`, tick-based policy): around the middle (0), at most about the model's frame rate in ticks per second; below the middle, a pause after each tick, from 1 ms just below 0 to 9 s at -50; toward 50, unpaced. Absent: unpaced.
+- `delayMillis` (protocol 1): a further pause after each iteration.
+- `stopWhen` (protocol 1, G6): a reporter evaluated after each iteration through the observation path (D-14). When it reports true, the run ends with reason `"condition"`. When it reports anything else than true or false, or fails, the run ends with reason `"error"`. A reporter that doesn't compile is returned as the response's `1001 CompilerError`, and no run starts.
+- `agents` (protocol 1, D-26): who runs the command. Only `{ "kind": "observer" }` is accepted; `"turtles"`, `"patches"`, `"links"` and a breed are reserved for agent forever buttons and fail with `-32602`. A second `workspace.run` while one is active fails with `1005 Busy`; that rule is where several runs per workspace would be allowed later.
 
 For models that don't use ticks, "ticks passed" counts iterations instead. View frames and agent frames of one run each have their own sequence numbers, starting at 0.
 
 The command is compiled as `source` followed by NetLogo's `__experimentstepend`, the same way BehaviorSpace compiles its go commands (`lab/Worker.scala` at `v7.0.4`). That is how a `stop` at the top level of the procedure is detected. Each iteration runs on the model's main random number generator, so a run gives the same results as the same commands sent through `workspace.command`. A compile error is returned as the response, and no run starts. The response `{ "run": int }` is sent once the command has compiled, before the first iteration.
+
+**`workspace.snapshot`** (protocol 1, G15)
+
+Sends the workspace's current view and agent state as binary frames (section 6) with run number 0. Snapshot frames have their own sequence numbers per workspace, starting at 0. During a `workspace.run` the snapshot is taken between two iterations.
+
+```
+params: { "workspace": WorkspaceId, "view"?: bool, "agents"?: bool }   // view defaults to true, agents to false
+result: {}
+```
+
+**`workspace.plots`** (protocol 1, G4)
+
+Returns every plot with all its points. From then on the bridge sends the workspace's plot changes as `run.plots` notifications (section 5.5): during a run after an iteration that changed a plot, at most at the view stream's `maxFps` (or the model's frame rate when there is no view stream), once more when the run ends, and after a `workspace.command` with `snapshot` and after `workspace.snapshot`. During a run it is answered between two iterations.
+
+```
+params: { "workspace": WorkspaceId }
+result: { "plots": [ Plot ] }
+Plot:   { "name": string, "xMin": number, "xMax": number, "yMin": number, "yMax": number,
+          "autoPlotX": bool, "autoPlotY": bool, "legend": bool, "pens": [ Pen ] }
+Pen:    { "name": string, "color": int, "mode": int, "interval": number, "hidden": bool,
+          "inLegend": bool, "temporary": bool, "reset": bool,
+          "points": [ [x: number, y: number, penDown: bool, color: int] ] }
+```
+
+- Colors are ARGB as an unsigned 32-bit integer (`0xFF000000` is opaque black).
+- `mode`: 0 line, 1 bar, 2 point, as in NetLogo's `set-plot-pen-mode`.
+- Interactive runs update plots, as the NetLogo GUI does. `experiment.run` keeps them off unless `updatePlots` is true.
+- Plot code runs on the plot manager's own random number generator, so plots never change a run (section 9).
+
+**`workspace.runSettings`** (protocol 1, G2)
+
+Changes a run in progress, between two iterations. Fields that are absent are left as they are.
+
+```
+params: { "workspace": WorkspaceId,
+          "speed"?: number | null,              // as in workspace.run; null for no pacing
+          "delayMillis"?: number,
+          "stopWhen"?: string | null,           // null or "" removes the condition
+          "stream"?: { "view"?: Stream | null, "agents"?: Stream | null } }   // null stops the stream
+result: { "applied": bool }                     // false when no run was active
+```
+
+A `stopWhen` that doesn't compile fails with `1001 CompilerError`, and nothing is changed. A stream set again continues its sequence numbers.
 
 **`workspace.stop`**
 
@@ -342,6 +421,7 @@ result: { "runNumber": int, "settings": [ { "name": string, ...Cell } ],
 - `"failed"`: BehaviorSpace abandoned the run, for example because a variable doesn't exist or the stop condition reported something other than true or false. `errors` says why.
 - Runtime errors in setup, go, metrics or post-run commands are listed in `errors` and, as in BehaviorSpace, the run continues.
 - `steps` counts completed steps, as in the `[step]` column.
+- While the run goes on, the bridge sends `experiment.progress` notifications (section 5.5), at most one every 250 ms per run (protocol 1).
 
 **`experiment.command`**
 
@@ -365,9 +445,11 @@ result: {}
 |---|---|
 | `workspace.output` | `{ "workspace": WorkspaceId, "text": string, "outputArea": bool }` — text printed by the model. `outputArea` is true for `output-print`, `output-show`, `output-type` and `output-write` (NetLogo's Output widget) and false for `print`, `show`, `type` and `write` (NetLogo's Command Center). `outputArea` was added after protocol 0; a missing value means false |
 | `run.observed` | `{ "workspace": WorkspaceId, "run": int, "ticks": number \| null, "values": [ {"ok": Value} \| {"error": ErrorData} ] }` |
-| `run.finished` | `{ "workspace": WorkspaceId, "run": int, "reason": "stopped" \| "completed" \| "halted" \| "error", "iterations": int, "ticks": number \| null, "elapsedMillis": number, "error": ErrorData \| null }` |
+| `experiment.progress` | `{ "workspace": WorkspaceId, "experiment": int, "runNumber": int, "steps": int, "ticks": number \| null, "elapsedMillis": number }` — during an `experiment.run`: one with `steps` 0 when the run starts, then after a step at most one every 250 ms (protocol 1). The run's end is the `experiment.run` response |
+| `run.plots` | `{ "workspace": WorkspaceId, "run": int, "ticks": number \| null, "plots": [ { "name": string, "xMin": number, "xMax": number, "yMin": number, "yMax": number, "pens": [ Pen ], "removedPens": [string] } ] }` — plot changes since the last `workspace.plots` result or `run.plots` (protocol 1, G4). Only plots that changed are listed, and in them only pens with new points; a pen's `points` are the new ones, or all of them with `reset` true after `clear-plot`, `plot-pen-reset` or a new temporary pen. `run` is 0 after a command or snapshot |
+| `run.finished` | `{ "workspace": WorkspaceId, "run": int, "reason": "stopped" \| "completed" \| "halted" \| "error" \| "condition", "iterations": int, "ticks": number \| null, "elapsedMillis": number, "error": ErrorData \| null }` |
 
-`reason` values: `"stopped"` = the command executed `stop`; `"completed"` = `repeat` iterations finished; `"halted"` = `workspace.stop`, `workspace.dispose` or bridge shutdown; `"error"` = runtime error. `iterations` counts completed iterations; an iteration that fails with a runtime error is not counted.
+`reason` values: `"stopped"` = the command executed `stop`; `"completed"` = `repeat` iterations finished; `"halted"` = `workspace.stop`, `workspace.dispose` or bridge shutdown; `"error"` = runtime error; `"condition"` = the `stopWhen` reporter reported true (protocol 1). `iterations` counts completed iterations; an iteration that fails with a runtime error is not counted.
 
 ## 6. Binary data frames
 
@@ -377,7 +459,7 @@ A binary frame (`kind = 0x02`) starts with a common header. All integers are lit
 |---|---|
 | 1 | `type`: `0x01` = view frame, `0x02` = agent state |
 | 4 | `workspace` (u32) |
-| 4 | `run` (u32) |
+| 4 | `run` (u32); 0 for snapshot frames (protocol 1) |
 | 8 | `sequence` (u64), increasing per run and frame type, starting at 0 |
 | 8 | `ticks` (f64); NaN when ticks have not been reset |
 
@@ -393,10 +475,11 @@ The image is NetLogo's own rendering of the view (`HeadlessWorkspace.exportView`
 
 ### 6.2 Agent state (`type = 0x02`)
 
-Phase 0 layout, for the A-state throughput measurement. It will change in Phase 1.
+Layout version 1 (protocol 1). It adds the version byte and the link columns to the Phase 0 layout; the patch and turtle columns are unchanged.
 
 | Bytes | Field |
 |---|---|
+| 1 | `layoutVersion` (u8), 1 |
 | 4 | `patchCount` (u32) |
 | 4 | `minPxcor` (i32) |
 | 4 | `maxPxcor` (i32) |
@@ -414,10 +497,20 @@ Phase 0 layout, for the A-state throughput measurement. It will change in Phase 
 | `× 2` | `shapeIndex` (u16), index into the model's turtle shapes in NetLogo's shape list order: `default` first, then the others sorted by name |
 | `× 2` | `breedIndex` (u16), 0 = `turtles`, then breeds in declaration order |
 | `× 1` | `hidden` (u8, 0 or 1) |
+| 4 | `linkCount` (u32) |
+| then one column after another, each `linkCount` long: | |
+| `× 8` | `end1` (f64), the `who` of the first end |
+| `× 8` | `end2` (f64), the `who` of the second end |
+| `× 4` | `color` as RGBA |
+| `× 8` | `thickness` (f64) |
+| `× 2` | `shapeIndex` (u16), index into the model's link shapes in the same order as turtle shapes |
+| `× 2` | `breedIndex` (u16), 0 = `links`, then link breeds in declaration order |
+| `× 1` | `hidden` (u8, 0 or 1) |
+| `× 1` | `directed` (u8, 0 or 1) |
 
-Agent state is read on the job thread between iterations. Reading it does not use the random number generator: patch colors come from the array NetLogo's renderer uses (`World.patchColors`), and turtles are read in `who` order with `TreeAgentSet.iterator`, not with a shuffling agentset iteration.
+Agent state is read on the job thread between iterations. Reading it does not use the random number generator: patch colors come from the array NetLogo's renderer uses (`World.patchColors`), and turtles and links are read with `TreeAgentSet.iterator` (turtles in `who` order, links by `end1`, `end2` and breed), not with a shuffling agentset iteration.
 
-Size: 25 (common header) + 20 + 4 × patches + 4 + 49 × turtles bytes. With 10,201 patches and 10,000 turtles, 530,853 bytes (518 KiB).
+Size: 25 (common header) + 1 + 20 + 4 × patches + 4 + 49 × turtles + 4 + 34 × links bytes. With 10,201 patches, 10,000 turtles and no links, 530,858 bytes (518 KiB).
 
 ## 7. Values
 
@@ -464,5 +557,5 @@ A `RuntimeError` or `CompilerError` never ends the bridge process. The workspace
 
 - Settled: `HeadlessWorkspace.exportView` is called on the job thread between iterations. `RunTest.runMatchesTheSameStepsAsCommands` checks that a run with frames gives the same model state as the same steps without them.
 - Settled: top-level `stop` is detected with `__experimentstepend`, as in BehaviorSpace.
-- Confirm which random generator plot update code uses in a headless run (A12).
+- Settled (protocol 1, G4): plot code runs on the plot manager's own random number generator, a clone of the main one made when the workspace is created (`plotRNG` in workspace/AbstractWorkspace.scala at v7.0.4). Updating plots never draws from the main generator. `ProtocolOneTest.plotCodeDoesNotChangeTheMainRandomNumbers` checks it.
 - Decide whether `workspace.output` should be buffered per iteration to avoid one notification per `print`.

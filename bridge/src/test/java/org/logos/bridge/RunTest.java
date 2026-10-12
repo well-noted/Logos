@@ -128,7 +128,8 @@ class RunTest {
             command(c, ws, "setup");
             run(c, ws, "go", null, Map.of());
 
-            // While running: observe is answered between iterations, commands are refused.
+            // While running: observe and commands are answered between iterations (G1); a
+            // second run is refused.
             double ticks = 0;
             for (int i = 0; i < 500 && ticks < 5; i++) {
                 @SuppressWarnings("unchecked")
@@ -137,9 +138,8 @@ class RunTest {
                 Thread.sleep(2);
             }
             assertTrue(ticks >= 5, "the run advanced while being observed");
-            Map<String, Object> busy = TestClient.error(c.call("workspace.command",
+            TestClient.result(c.call("workspace.command",
                     params("workspace", ws, "source", "tick")));
-            assertEquals((long) RpcException.BUSY, busy.get("code"));
             Map<String, Object> again = TestClient.error(c.call("workspace.run",
                     params("workspace", ws, "source", "go")));
             assertEquals((long) RpcException.BUSY, again.get("code"));

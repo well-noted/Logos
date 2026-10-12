@@ -91,6 +91,12 @@ final class Workspaces {
 
         long runCount;
 
+        /** Sequence numbers of snapshot frames (run 0). Guarded by this handle's monitor. */
+        long snapshotCount;
+
+        /** What the client has of the plots (G4); null until it asks with workspace.plots. */
+        Plots.Tracker plots;
+
         Handle(long id) {
             this.id = id;
             this.thread = Executors.newSingleThreadExecutor(r -> {
@@ -105,8 +111,19 @@ final class Workspaces {
     private static final class Run {
         final long id;
         volatile boolean stopRequested;
+        /** Pause after each iteration, in nanoseconds (G2). */
+        volatile long delayNanos;
+        /** NetLogo's speed slider position, -50 to 50, or NaN for no pacing (G2). */
+        volatile double speed = Double.NaN;
+        /** The stop condition (G6), compiled; changed between iterations by runSettings. */
+        Procedure condition;
+        /** The run's stream emitters, changed by workspace.runSettings on the job thread. */
+        Emitter view;
+        Emitter agents;
         /** Stops an experiment run after its current step; null for other runs. */
         volatile Runnable onStop;
+        /** An experiment.run, which takes no commands or settings in between. */
+        boolean experiment;
 
         void stop() {
             stopRequested = true;
@@ -122,7 +139,7 @@ final class Workspaces {
     }
 
     /** Stream settings for one kind of output (PROTOCOL.md section 5.2, workspace.run). */
-    private record Stream(long everyTicks, double maxFps) {
+    private record Stream(long everyTicks, double maxFps, boolean onTicks) {
         long minIntervalNanos() {
             return (long) (1_000_000_000L / maxFps);
         }
@@ -140,8 +157,50 @@ final class Workspaces {
                 case "workspace.openString" -> open(params, reply, true);
                 case "workspace.command" -> {
                     String source = string(params, "source");
-                    onThread(idle(handle(params)), reply, h -> command(h, source));
+                    Map<String, Object> snap = optionalMap(params, "snapshot");
+                    boolean snapView = Boolean.TRUE.equals(snap.get("view"));
+                    boolean snapAgents = Boolean.TRUE.equals(snap.get("agents"));
+                    commandNowOrBetweenIterations(handle(params), reply, source, snapView,
+                            snapAgents);
                 }
+                case "workspace.snapshot" -> {
+                    boolean view = !Boolean.FALSE.equals(params.get("view"));
+                    boolean agents = Boolean.TRUE.equals(params.get("agents"));
+                    Handle h = handle(params);
+                    synchronized (h) {
+                        if (h.run != null) {
+                            h.betweenIterations.add(() -> {
+                                try {
+                                    snapshot(h, view, agents);
+                                    reply.ok(Map.of());
+                                } catch (IOException e) {
+                                    reply.error(new RpcException(RpcException.INTERNAL,
+                                            "output failed"));
+                                }
+                            });
+                            break;
+                        }
+                    }
+                    onThread(h, reply, x -> {
+                        try {
+                            snapshot(x, view, agents);
+                        } catch (IOException e) {
+                            throw new RpcException(RpcException.INTERNAL, "output failed");
+                        }
+                        return Map.of();
+                    });
+                }
+                case "workspace.plots" -> {
+                    Handle h = handle(params);
+                    synchronized (h) {
+                        if (h.run != null) {
+                            h.betweenIterations.add(() -> reply.ok(plots(h)));
+                            break;
+                        }
+                    }
+                    onThread(h, reply, this::plots);
+                }
+                case "workspace.runSettings" -> runSettings(handle(params), params, reply);
                 case "workspace.program" ->
                     onThread(idle(handle(params)), reply, h -> ProgramInfo.of(h.ws));
                 case "workspace.check" -> {
@@ -149,6 +208,19 @@ final class Workspaces {
                     List<String> globals = params.get("interfaceGlobals") == null ? null
                             : stringList(params, "interfaceGlobals");
                     onThread(idle(handle(params)), reply, h -> Check.of(h.ws, source, globals));
+                }
+                case "workspace.recompile" -> {
+                    String source = string(params, "source");
+                    boolean dryRun = Boolean.TRUE.equals(params.get("dryRun"));
+                    List<String> globals = params.get("interfaceGlobals") == null ? null
+                            : stringList(params, "interfaceGlobals");
+                    onThread(idle(handle(params)), reply, h -> {
+                        try {
+                            return Recompile.of(h.ws, source, dryRun, globals);
+                        } catch (CompilerException e) {
+                            throw compilerError(e, 0, source);
+                        }
+                    });
                 }
                 case "workspace.references" -> {
                     String source = string(params, "source");
@@ -226,6 +298,8 @@ final class Workspaces {
      * the reply, which is sent when the run ends; {@code workspace.stop} ends it after the
      * current step.
      */
+    private static final long PROGRESS_GAP_NANOS = 250_000_000L;
+
     private void startExperimentRun(Handle h, Map<String, Object> params, Reply reply)
             throws RpcException {
         long id = requiredLong(params, "experiment");
@@ -235,15 +309,42 @@ final class Workspaces {
         synchronized (h) {
             idle(h);
             run = new Run(++h.runCount);
+            run.experiment = true;
             h.run = run;
         }
         onThreadRaw(h, () -> {
             Object result;
             try {
+                long started = System.nanoTime();
+                long[] lastSent = {started};
+                java.util.function.LongConsumer progress = steps -> {
+                    long now = System.nanoTime();
+                    lastSent[0] = now;
+                    Map<String, Object> note = new LinkedHashMap<>();
+                    note.put("workspace", h.id);
+                    note.put("experiment", id);
+                    note.put("runNumber", runNumber);
+                    note.put("steps", steps);
+                    double ticks = h.ws.world().ticks();
+                    note.put("ticks", ticks < 0 ? null : ticks);
+                    note.put("elapsedMillis", (now - started) / 1_000_000.0);
+                    try {
+                        outbox.notify("experiment.progress", note);
+                    } catch (IOException e) {
+                        // The client has gone; the run ends when the bridge does.
+                    }
+                };
+                // G11: the run's start is the first notification, then at most one every
+                // 250 ms.
                 result = experiments.run(h.ws, id, runNumber, updatePlots, stop -> {
+                    progress.accept(0);
                     run.onStop = stop;
                     if (run.stopRequested) {
                         stop.run();
+                    }
+                }, steps -> {
+                    if (System.nanoTime() - lastSent[0] >= PROGRESS_GAP_NANOS) {
+                        progress.accept(steps);
                     }
                 });
             } catch (RpcException e) {
@@ -411,6 +512,165 @@ final class Workspaces {
     }
 
     /**
+     * Runs commands now, or between two iterations when the workspace is running (G1). The
+     * response is sent when the commands have run. With {@code snapView} or {@code snapAgents}
+     * and no run, a snapshot follows the commands (G15); a run sends its own frames.
+     */
+    private void commandNowOrBetweenIterations(Handle h, Reply reply, String source,
+            boolean snapView, boolean snapAgents) throws RpcException {
+        synchronized (h) {
+            if (h.run != null) {
+                if (h.run.experiment) {
+                    throw new RpcException(RpcException.BUSY,
+                            "workspace " + h.id + " is running an experiment",
+                            Map.of("run", h.run.id));
+                }
+                h.betweenIterations.add(() -> {
+                    try {
+                        command(h, source);
+                        reply.ok(Map.of());
+                    } catch (RpcException e) {
+                        reply.error(e);
+                    }
+                });
+                return;
+            }
+        }
+        onThread(h, reply, x -> {
+            RpcException failure = null;
+            try {
+                command(x, source);
+            } catch (RpcException e) {
+                failure = e;
+            }
+            // The snapshot shows the world even after a runtime error part way.
+            if (snapView || snapAgents) {
+                try {
+                    snapshot(x, snapView, snapAgents);
+                } catch (IOException e) {
+                    log.println("logos-bridge: snapshot failed: " + e.getMessage());
+                }
+            }
+            if (failure != null) {
+                throw failure;
+            }
+            return Map.of();
+        });
+    }
+
+    /**
+     * Sends the current view and agent state as binary frames with run number 0 (G15). Called
+     * on the job thread, between iterations when a run is active.
+     */
+    private void snapshot(Handle h, boolean view, boolean agents) throws IOException {
+        double t = h.ws.world().ticks();
+        double ticks = t < 0 ? Double.NaN : t;
+        long seq;
+        synchronized (h) {
+            seq = h.snapshotCount++;
+        }
+        if (view) {
+            outbox.binary(ViewFrame.encode(h.id, 0, seq, ticks, h.ws.exportView()));
+        }
+        if (agents) {
+            outbox.binary(AgentState.encode(h.id, 0, seq, ticks, h.ws.world()));
+        }
+        sendPlotChanges(h, 0);
+    }
+
+    /** Every plot and its points (G4); from now on the client is sent changes. */
+    private Map<String, Object> plots(Handle h) {
+        if (h.plots == null) {
+            h.plots = new Plots.Tracker();
+        }
+        return Plots.all(h.ws, h.plots);
+    }
+
+    /** Sends {@code run.plots} if the client follows the plots and one changed (G4). */
+    private void sendPlotChanges(Handle h, long run) throws IOException {
+        if (h.plots == null) {
+            return;
+        }
+        List<Object> changes = Plots.changes(h.ws, h.plots);
+        if (changes.isEmpty()) {
+            return;
+        }
+        Map<String, Object> note = new LinkedHashMap<>();
+        note.put("workspace", h.id);
+        note.put("run", run);
+        note.put("ticks", ticks(h));
+        note.put("plots", changes);
+        outbox.notify("run.plots", note);
+    }
+
+    /**
+     * Changes a run in progress (G2): the delay after each iteration and the view and agent
+     * streams. Applied between two iterations; the response is sent then.
+     */
+    private void runSettings(Handle h, Map<String, Object> params, Reply reply)
+            throws RpcException {
+        Long delay = null;
+        if (params.containsKey("delayMillis")) {
+            Object d = params.get("delayMillis");
+            if (!(d instanceof Number n) || n.doubleValue() < 0) {
+                throw new RpcException(RpcException.INVALID_PARAMS,
+                        "delayMillis must be a number, 0 or more");
+            }
+            delay = (long) (n.doubleValue() * 1_000_000L);
+        }
+        boolean setSpeed = params.containsKey("speed");
+        double speed = speedParam(params);
+        boolean setStopWhen = params.containsKey("stopWhen");
+        String stopWhen = setStopWhen ? optionalString(params, "stopWhen") : null;
+        boolean hasStream = params.containsKey("stream");
+        Map<String, Object> streams = optionalMap(params, "stream");
+        boolean setView = hasStream && streams.containsKey("view");
+        boolean setAgents = hasStream && streams.containsKey("agents");
+        Stream view = setView ? stream(streams, "view") : null;
+        Stream agentsRate = setAgents ? stream(streams, "agents") : null;
+        Long newDelay = delay;
+        synchronized (h) {
+            Run run = h.run;
+            if (run == null || run.experiment) {
+                // Nothing to change; the client may have raced the run's end.
+                reply.ok(Map.of("applied", false));
+                return;
+            }
+            if (newDelay != null) {
+                run.delayNanos = newDelay;
+            }
+            if (setSpeed) {
+                run.speed = speed;
+            }
+            h.betweenIterations.add(() -> {
+                if (setStopWhen) {
+                    if (stopWhen == null || stopWhen.isBlank()) {
+                        run.condition = null;
+                    } else {
+                        try {
+                            run.condition = h.ws.compileReporter(stopWhen);
+                        } catch (CompilerException e) {
+                            reply.error(compilerError(e, reporterOffset(h), stopWhen));
+                            return;
+                        }
+                    }
+                }
+                if (setView) {
+                    run.view = view == null ? null : new Emitter(view, (seq, ticks) ->
+                            ViewFrame.encode(h.id, run.id, seq, ticks, h.ws.exportView()),
+                            run.view);
+                }
+                if (setAgents) {
+                    run.agents = agentsRate == null ? null : new Emitter(agentsRate,
+                            (seq, ticks) -> AgentState.encode(h.id, run.id, seq, ticks,
+                                    h.ws.world()), run.agents);
+                }
+                reply.ok(Map.of("applied", true));
+            });
+        }
+    }
+
+    /**
      * Evaluates reporters on a clone of the main random number generator, the way BehaviorSpace
      * evaluates metrics, so observing never changes the run (D-14).
      */
@@ -477,6 +737,21 @@ final class Workspaces {
         if (repeat != null && repeat < 0) {
             throw new RpcException(RpcException.INVALID_PARAMS, "repeat must not be negative");
         }
+        // D-26: forever buttons of turtles, patches and links are reserved for later; the
+        // field is here so the message shape doesn't change when they come.
+        Map<String, Object> agentsSpec = optionalMap(params, "agents");
+        Object kind = agentsSpec.getOrDefault("kind", "observer");
+        if (!"observer".equals(kind)) {
+            throw new RpcException(RpcException.INVALID_PARAMS,
+                    "runs as " + kind + " are not supported yet; only \"observer\"");
+        }
+        String stopWhen = optionalString(params, "stopWhen");
+        Object delayParam = params.getOrDefault("delayMillis", 0L);
+        if (!(delayParam instanceof Number delayNumber) || delayNumber.doubleValue() < 0) {
+            throw new RpcException(RpcException.INVALID_PARAMS,
+                    "delayMillis must be a number, 0 or more");
+        }
+        double speed = speedParam(params);
         Map<String, Object> stream = optionalMap(params, "stream");
         Stream view = stream(stream, "view");
         Stream agents = stream(stream, "agents");
@@ -489,6 +764,8 @@ final class Workspaces {
         synchronized (h) {
             idle(h);
             run = new Run(++h.runCount);
+            run.delayNanos = (long) (delayNumber.doubleValue() * 1_000_000L);
+            run.speed = speed;
             h.run = run;
         }
         onThreadRaw(h, () -> {
@@ -502,30 +779,70 @@ final class Workspaces {
                 reply.error(compilerError(e, compiledCommandOffset(h), source));
                 return;
             }
+            Procedure condition = null;
+            if (stopWhen != null && !stopWhen.isBlank()) {
+                try {
+                    condition = h.ws.compileReporter(stopWhen);
+                } catch (CompilerException e) {
+                    endRun(h);
+                    reply.error(compilerError(e, reporterOffset(h), stopWhen));
+                    return;
+                }
+            }
+            run.condition = condition;
             reply.ok(Map.of("run", run.id));
-            List<Emitter> emitters = new ArrayList<>();
             if (view != null) {
-                emitters.add(new Emitter(view, (seq, ticks) ->
-                        ViewFrame.encode(h.id, run.id, seq, ticks, h.ws.exportView())));
+                run.view = new Emitter(view, (seq, ticks) ->
+                        ViewFrame.encode(h.id, run.id, seq, ticks, h.ws.exportView()), null);
             }
             if (agents != null) {
-                emitters.add(new Emitter(agents, (seq, ticks) ->
-                        AgentState.encode(h.id, run.id, seq, ticks, h.ws.world())));
+                run.agents = new Emitter(agents, (seq, ticks) ->
+                        AgentState.encode(h.id, run.id, seq, ticks, h.ws.world()), null);
             }
-            runLoop(h, run, proc, repeat, emitters, observeReporters, observeEvery);
+            runLoop(h, run, proc, repeat, observeReporters, observeEvery);
         }, reply);
     }
 
-    private void runLoop(Handle h, Run run, Procedure proc, Long repeat, List<Emitter> emitters,
+    /**
+     * Evaluates a stop condition through the observation path, on a clone of the main random
+     * number generator (D-14, G6). Returns null when it reports true or false, otherwise the
+     * error to end the run with.
+     */
+    private Object conditionMet(Handle h, Procedure condition) {
+        SimpleJobOwner owner = new SimpleJobOwner(
+                "Logos stop condition", h.ws.world().mainRNG().clone(), AgentKindJ.Observer());
+        h.ws.clearLastLogoException();
+        Object v = h.ws.runCompiledReporter(owner, condition);
+        LogoException failure = h.ws.lastLogoException();
+        if (failure != null) {
+            h.ws.clearLastLogoException();
+            return errorData(runtimeError(failure));
+        }
+        if (v instanceof Boolean b) {
+            return b;
+        }
+        return errorData(new RpcException(RpcException.RUNTIME_ERROR,
+                "The stop condition reported " + Values.toJson(v) + ", not true or false.",
+                Map.of()));
+    }
+
+    private void runLoop(Handle h, Run run, Procedure proc, Long repeat,
             List<String> observeReporters, long observeEvery) {
         long started = System.nanoTime();
         long iterations = 0;
         String reason;
         Map<String, Object> error = null;
         double lastObserveProgress = 0;
+        // Plot changes go at most at the view's frame rate (G4).
+        long plotGap = run.view != null ? run.view.rate.minIntervalNanos()
+                : (long) (1_000_000_000L / Math.max(1, h.ws.frameRate()));
+        long plotsDue = System.nanoTime();
         try {
-            for (Emitter e : emitters) {
-                e.first(h);
+            if (run.view != null) {
+                run.view.first(h);
+            }
+            if (run.agents != null) {
+                run.agents.first(h);
             }
             while (true) {
                 drainBetweenIterations(h);
@@ -537,6 +854,7 @@ final class Workspaces {
                     reason = "completed";
                     break;
                 }
+                long iterationStart = System.nanoTime();
                 SimpleJobOwner owner = new SimpleJobOwner(
                         "Logos run", h.ws.world().mainRNG(), AgentKindJ.Observer());
                 h.ws.clearLastLogoException();
@@ -550,8 +868,18 @@ final class Workspaces {
                 }
                 iterations++;
                 double progress = progress(h, iterations);
-                for (Emitter e : emitters) {
-                    e.afterIteration(h, iterations, progress);
+                // Settings may have replaced an emitter between iterations.
+                Emitter v = run.view;
+                Emitter a = run.agents;
+                if (v != null) {
+                    v.afterIteration(h, iterations, progress);
+                }
+                if (a != null) {
+                    a.afterIteration(h, iterations, progress);
+                }
+                if (h.plots != null && System.nanoTime() >= plotsDue) {
+                    sendPlotChanges(h, run.id);
+                    plotsDue = System.nanoTime() + plotGap;
                 }
                 if (observeEvery > 0 && progress - lastObserveProgress >= observeEvery) {
                     Map<String, Object> obs = observe(h, observeReporters);
@@ -566,11 +894,31 @@ final class Workspaces {
                     reason = "stopped";
                     break;
                 }
+                Procedure condition = run.condition;
+                if (condition != null) {
+                    Object met = conditionMet(h, condition);
+                    if (Boolean.TRUE.equals(met)) {
+                        reason = "condition";
+                        break;
+                    }
+                    if (met instanceof Map<?, ?> err) {
+                        reason = "error";
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> e = (Map<String, Object>) err;
+                        error = e;
+                        break;
+                    }
+                }
+                pause(h, run, iterationStart);
             }
             // Make sure the client sees the final state.
-            for (Emitter e : emitters) {
-                e.last(h, iterations);
+            if (run.view != null) {
+                run.view.last(h, iterations);
             }
+            if (run.agents != null) {
+                run.agents.last(h, iterations);
+            }
+            sendPlotChanges(h, run.id);
         } catch (IOException e) {
             log.println("logos-bridge: output failed during run: " + e.getMessage());
             reason = "error";
@@ -598,6 +946,38 @@ final class Workspaces {
         }
     }
 
+    /**
+     * Waits the run's delay after an iteration (G2). Commands, observations and settings that
+     * arrive meanwhile run at once, and a stop ends the wait.
+     */
+    private void pause(Handle h, Run run, long iterationStart) {
+        long until = System.nanoTime() + run.delayNanos;
+        double speed = run.speed;
+        if (!Double.isNaN(speed)) {
+            // NetLogo's pacing: at most the frame rate's worth of ticks per second around the
+            // middle of the slider, and a pause after each tick below it.
+            long paced = iterationStart + Speed.iterationGapNanos(speed, h.ws.frameRate());
+            until = Math.max(until, paced) + Speed.slowdownNanos(speed);
+        }
+        if (until <= System.nanoTime()) {
+            return;
+        }
+        while (!run.stopRequested) {
+            drainBetweenIterations(h);
+            long left = until - System.nanoTime();
+            // A settings change that speeds the run up ends the wait.
+            if (left <= 0 || (run.delayNanos == 0 && Double.isNaN(run.speed))) {
+                return;
+            }
+            try {
+                Thread.sleep(Math.min(10, Math.max(1, left / 1_000_000L)));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
     private void drainBetweenIterations(Handle h) {
         while (true) {
             Runnable task;
@@ -619,6 +999,7 @@ final class Workspaces {
             leftover.addAll(h.betweenIterations);
             h.betweenIterations.clear();
         }
+        // Queued commands still run, now outside the run, and get their responses.
         leftover.forEach(Runnable::run);
     }
 
@@ -636,19 +1017,30 @@ final class Workspaces {
 
     /**
      * Sends one stream's frames during a run (view or agent state). Each stream has its own
-     * sequence numbers, starting at 0 with the state before the first iteration.
+     * sequence numbers, starting at 0 with the state before the first iteration. With
+     * {@code onTicks}, a frame is sent only when the tick counter changed since the last one
+     * (NetLogo's "on ticks" view updates).
      */
     private final class Emitter {
         private final Stream rate;
         private final FrameSource source;
         private long sequence;
         private double lastProgress;
+        private double lastTicks = Double.NaN;
         private long nextDue;
         private long lastIteration;
 
-        Emitter(Stream rate, FrameSource source) {
+        /** {@code previous}: the emitter this one replaces, whose numbering it continues. */
+        Emitter(Stream rate, FrameSource source, Emitter previous) {
             this.rate = rate;
             this.source = source;
+            if (previous != null) {
+                sequence = previous.sequence;
+                lastProgress = previous.lastProgress;
+                lastTicks = previous.lastTicks;
+                lastIteration = previous.lastIteration;
+            }
+            nextDue = System.nanoTime();
         }
 
         void first(Handle h) throws IOException {
@@ -661,6 +1053,12 @@ final class Workspaces {
             long now = System.nanoTime();
             if (progress - lastProgress < rate.everyTicks() || now < nextDue) {
                 return;
+            }
+            if (rate.onTicks()) {
+                double t = h.ws.world().ticks();
+                if (t == lastTicks || (Double.isNaN(lastTicks) && t < 0)) {
+                    return;
+                }
             }
             send(h);
             lastProgress = progress;
@@ -682,6 +1080,7 @@ final class Workspaces {
 
         private void send(Handle h) throws IOException {
             double t = h.ws.world().ticks();
+            lastTicks = t < 0 ? Double.NaN : t;
             outbox.binary(source.frame(sequence++, t < 0 ? Double.NaN : t));
         }
     }
@@ -849,7 +1248,25 @@ final class Workspaces {
         if (!(fps instanceof Number n) || n.doubleValue() <= 0) {
             throw new RpcException(RpcException.INVALID_PARAMS, "maxFps must be positive");
         }
-        return new Stream(every, n.doubleValue());
+        Object update = spec.getOrDefault("update", "iteration");
+        if (!"iteration".equals(update) && !"ticks".equals(update)) {
+            throw new RpcException(RpcException.INVALID_PARAMS,
+                    "update must be \"iteration\" or \"ticks\"");
+        }
+        return new Stream(every, n.doubleValue(), "ticks".equals(update));
+    }
+
+    /** The {@code speed} param: NetLogo's slider position -50 to 50, or NaN when absent. */
+    private static double speedParam(Map<String, Object> params) throws RpcException {
+        Object v = params.get("speed");
+        if (v == null) {
+            return Double.NaN;
+        }
+        if (!(v instanceof Number n) || n.doubleValue() < -50 || n.doubleValue() > 50) {
+            throw new RpcException(RpcException.INVALID_PARAMS,
+                    "speed must be a number from -50 to 50");
+        }
+        return n.doubleValue();
     }
 
     private static Object ticks(Handle h) {

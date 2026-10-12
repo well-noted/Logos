@@ -188,6 +188,7 @@ fn run_streams_view_frames_until_the_model_stops() {
         view: Some(StreamRate {
             every_ticks: 1,
             max_fps: 1000.0,
+            update: Default::default(),
         }),
         agents: None,
         observe: None,
@@ -241,6 +242,7 @@ fn a4_run_speed_with_and_without_frames() {
         view: Some(StreamRate {
             every_ticks: 1,
             max_fps: 30.0,
+            update: Default::default(),
         }),
         agents: None,
         observe: None,
@@ -249,6 +251,7 @@ fn a4_run_speed_with_and_without_frames() {
         view: Some(StreamRate {
             every_ticks: 1,
             max_fps: 1000.0,
+            update: Default::default(),
         }),
         agents: None,
         observe: None,

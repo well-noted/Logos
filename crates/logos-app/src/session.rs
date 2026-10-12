@@ -583,10 +583,12 @@ impl Sessions {
             view: Some(StreamRate {
                 every_ticks: 1,
                 max_fps: 1000.0,
+                update: Default::default(),
             }),
             agents: Some(StreamRate {
                 every_ticks: 1,
                 max_fps: 1000.0,
+                update: Default::default(),
             }),
             observe: None,
         };
@@ -772,10 +774,12 @@ impl Sessions {
             view: Some(StreamRate {
                 every_ticks: 1,
                 max_fps: 30.0,
+                update: Default::default(),
             }),
             agents: Some(StreamRate {
                 every_ticks: 1,
                 max_fps: 10.0,
+                update: Default::default(),
             }),
             observe: (!monitors.is_empty()).then_some(ObserveStream {
                 reporters: monitors,
