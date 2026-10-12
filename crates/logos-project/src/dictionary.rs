@@ -79,6 +79,46 @@ impl DataDictionary {
             columns,
         })
     }
+
+    /// The dictionary as TOML. With `existing`, the text of the file being replaced, keys
+    /// Logos doesn't know are kept: at the top, and in each column, matched by name.
+    pub fn to_toml(&self, existing: Option<&str>) -> String {
+        use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
+        let mut doc: DocumentMut = existing.and_then(|t| t.parse().ok()).unwrap_or_default();
+        let set = |t: &mut Table, k: &str, v: Option<&str>| match v.filter(|v| !v.is_empty()) {
+            Some(v) => t[k] = value(v),
+            None => {
+                t.remove(k);
+            }
+        };
+        let old: Vec<Table> = doc
+            .get("column")
+            .and_then(Item::as_array_of_tables)
+            .map(|a| a.iter().cloned().collect())
+            .unwrap_or_default();
+        let root = doc.as_table_mut();
+        set(root, "description", self.description.as_deref());
+        set(root, "source", self.source.as_deref());
+        set(root, "format", self.format.as_deref());
+        let mut columns = ArrayOfTables::new();
+        for c in &self.columns {
+            let mut t = old
+                .iter()
+                .find(|t| t.get("name").and_then(Item::as_str) == Some(c.name.as_str()))
+                .cloned()
+                .unwrap_or_default();
+            t["name"] = value(&c.name);
+            set(&mut t, "type", c.r#type.as_deref());
+            set(&mut t, "unit", c.unit.as_deref());
+            set(&mut t, "description", c.description.as_deref());
+            columns.push(t);
+        }
+        root.remove("column");
+        if !columns.is_empty() {
+            root.insert("column", Item::ArrayOfTables(columns));
+        }
+        doc.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -99,5 +139,30 @@ mod tests {
         assert_eq!(d.columns[1].r#type, None);
         assert!(DataDictionary::parse("[[column]]\ntype = \"number\"").is_err());
         assert!(DataDictionary::parse("[[column]]\nname = \"a\"\ntype = \"float\"").is_err());
+    }
+
+    #[test]
+    fn writes_a_dictionary_and_keeps_unknown_keys() {
+        let text = "description = \"Water\"\nreviewed = true\n\n\
+                    [[column]]\nname = \"x\"\ntype = \"integer\"\nmissing = \"-1\"\n\n\
+                    [[column]]\nname = \"y\"\n";
+        let mut d = DataDictionary::parse(text).unwrap();
+        d.source = Some("Dean 1985".into());
+        d.columns[0].unit = Some("patch".into());
+        d.columns.remove(1);
+        d.columns.push(Column {
+            name: "kind".into(),
+            r#type: Some("string".into()),
+            unit: None,
+            description: Some("Spring or well".into()),
+        });
+        let out = d.to_toml(Some(text));
+        assert!(out.contains("reviewed = true"));
+        assert!(out.contains("missing = \"-1\""));
+        let back = DataDictionary::parse(&out).unwrap();
+        assert_eq!(back, d);
+        // From nothing.
+        let fresh = DataDictionary::parse(&d.to_toml(None)).unwrap();
+        assert_eq!(fresh, d);
     }
 }

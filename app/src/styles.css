@@ -375,3 +375,11 @@ pre.log { max-height: 160px; overflow: auto; font-size: 11px; background: var(--
 .w-view .view-description { position: absolute; left: 4px; right: 4px; bottom: 4px; background: var(--bg-panel); color: var(--text);
   border: 1px solid var(--control-border); border-radius: 4px; padding: 6px 28px 6px 8px; font-size: 12px; z-index: 2; }
 .w-view .view-description .icon-btn { position: absolute; top: 2px; right: 2px; }
+
+/* Data files */
+.data-split { display: grid; grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); gap: 20px; align-items: start; }
+@media (max-width: 1100px) { .data-split { grid-template-columns: minmax(0, 1fr); } }
+.data-doc .table-scroll { overflow: auto; max-height: 64vh; border: 1px solid var(--border); border-radius: 4px; }
+.data-doc .table-scroll th { position: sticky; top: 0; background: var(--bg-panel); }
+.data-doc .dictionary input[type="text"] { width: 100%; min-width: 0; box-sizing: border-box; }
+.link-btn { border: 0; background: transparent; color: var(--text); padding: 0; font: inherit; cursor: pointer; text-decoration: underline; text-decoration-color: var(--text-muted); }

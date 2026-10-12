@@ -48,6 +48,7 @@ LOGOS_BRIDGE_JAR=<any existing file>
 | `src/search.ts`, `src/searchpanel.tsx` | Search and replace across code, Info and widgets |
 | `src/recovery.tsx` | Autosave on focus loss, restoring an autosaved copy, models changed on disk |
 | `src/project.tsx` | Files activity, project setup and secrets |
+| `src/data.tsx` | Data file preview and data dictionary editor |
 | `src/experiments.tsx`, `src/bspace.ts` | The experiment editor, the run dashboard and results |
 | `src/panels.tsx` | Activity bar, outline, bottom panel (Command Center, Output, Problems, Log, Activity), status bar |
 | `src/settings.tsx`, `src/themes.ts` | Settings, built-in and custom themes (D-32) |

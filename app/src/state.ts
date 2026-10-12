@@ -79,6 +79,7 @@ export type Doc =
   | { id: "project"; kind: "project" }
   | { id: "secrets"; kind: "secrets" }
   | { id: string; kind: "experiment"; name: string }
+  | { id: string; kind: "data"; path: string }
   | { id: string; kind: "dashboard"; runId: number; name: string; dir?: string };
 
 export const docs = signal<Doc[]>([]);

@@ -3,6 +3,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod data;
 mod engine;
 mod experiments;
 mod git;
@@ -785,6 +786,25 @@ async fn project_init(
     blocking(move || project::init(&model_path(&core, id)?, &choice)).await
 }
 
+/// A table preview of a project file and its data dictionary (spec part P).
+#[tauri::command]
+async fn data_preview(core: CoreState<'_>, id: u64, path: String) -> AppResult<data::DataPreview> {
+    let core = core.inner().clone();
+    blocking(move || data::preview(&model_path(&core, id)?, &path)).await
+}
+
+/// Writes a file's data dictionary, and names it in `logos.toml`.
+#[tauri::command]
+async fn dictionary_save(
+    core: CoreState<'_>,
+    id: u64,
+    path: String,
+    dictionary: data::DictionaryView,
+) -> AppResult<data::DataPreview> {
+    let core = core.inner().clone();
+    blocking(move || data::save_dictionary(&model_path(&core, id)?, &path, &dictionary)).await
+}
+
 #[tauri::command]
 async fn project_set_role(
     core: CoreState<'_>,
@@ -1184,6 +1204,8 @@ fn main() {
             project_detect,
             project_init,
             project_set_role,
+            data_preview,
+            dictionary_save,
             project_check,
             secrets_list,
             secrets_unlock,

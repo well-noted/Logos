@@ -20,7 +20,7 @@ fn err(e: impl std::fmt::Display) -> AppError {
     AppError::new(e.to_string())
 }
 
-fn role_name(r: Role) -> &'static str {
+pub fn role_name(r: Role) -> &'static str {
     r.as_str()
 }
 
