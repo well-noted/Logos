@@ -1004,6 +1004,45 @@ impl Sessions {
         Ok(s.view(opened.compiled, errors, opened.model_version))
     }
 
+    /// The file text of an open model, as edited.
+    pub fn text_of(&self, path: &Path) -> Option<String> {
+        let models = self.models.lock().unwrap();
+        let s = models.values().find(|s| s.path == path)?;
+        Some(s.doc.lock().unwrap().nlogox.text().to_string())
+    }
+
+    /// Applies edits a rename made outside the code (widgets, experiments) to an open model.
+    /// `server_text` is the file the edits' offsets refer to; the model's own code is kept.
+    pub fn apply_outside_edits(
+        &self,
+        path: &Path,
+        server_text: &str,
+        mut edits: Vec<(std::ops::Range<usize>, String)>,
+    ) -> Option<(u64, String)> {
+        let s = {
+            let models = self.models.lock().unwrap();
+            models.values().find(|s| s.path == path)?.clone()
+        };
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0.start));
+        let mut text = server_text.to_string();
+        for (r, new) in edits {
+            if r.end <= text.len() && text.is_char_boundary(r.start) && text.is_char_boundary(r.end)
+            {
+                text.replace_range(r, &new);
+            }
+        }
+        let mut doc = s.doc.lock().unwrap();
+        let code = doc.nlogox.code().unwrap_or_default();
+        let mut n = Nlogox::parse(text).ok()?;
+        n.set_code(&code).ok()?;
+        doc.nlogox = n;
+        Some((s.id, doc.nlogox.text().to_string()))
+    }
+
+    pub fn widgets_of(&self, id: u64) -> AppResult<Vec<Widget>> {
+        Ok(self.get(id)?.widgets())
+    }
+
     pub fn outline(&self, id: u64) -> AppResult<Vec<OutlineEntry>> {
         let s = self.get(id)?;
         let code = s.doc.lock().unwrap().nlogox.code().unwrap_or_default();

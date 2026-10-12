@@ -12,11 +12,13 @@ import { ActivityBar, BottomPanel, SidePanel, StatusBar } from "./panels";
 import { Palette } from "./palette";
 import { SettingsDialog } from "./settings";
 import { Launcher } from "./launcher";
+import { ProjectDoc, SecretsDoc } from "./project";
+import { DashboardDoc, ExperimentDoc } from "./experiments";
 import { frames } from "./frames";
 import { ipc } from "./ipc";
 import {
-  closeModel, dirty, model, modelTab, notApplied, paletteOpen, rightOpen, settingsOpen, toast, viewPopped,
-  type ModelTab,
+  activeDoc, closeDoc, closeModel, dirty, docs, model, modelTab, notApplied, paletteOpen, rightOpen, settingsOpen,
+  toast, viewPopped, type Doc, type ModelTab,
 } from "./state";
 
 const MENUS: Command["menu"][] = ["File", "Edit", "View", "Model", "Run", "Tools", "Help"];
@@ -64,6 +66,40 @@ function Menus() {
   );
 }
 
+function docTitle(d: Doc): string {
+  switch (d.kind) {
+    case "model": return model.value?.name ?? "Model";
+    case "project": return "Project";
+    case "secrets": return "Secrets";
+    case "experiment": return `Experiment ${d.name}`;
+    case "dashboard": return `Run: ${d.name}`;
+  }
+}
+
+function DocTabs() {
+  const m = model.value!;
+  return (
+    <div class="doc-tabs" role="tablist" aria-label="Documents">
+      {docs.value.map((d) => {
+        const active = activeDoc.value === d.id;
+        return (
+          <div class={`doc-tab${active ? "" : " inactive"}`} role="tab" aria-selected={active} tabIndex={0}
+            title={d.kind === "model" ? m.path : docTitle(d)}
+            onClick={() => { activeDoc.value = d.id; }}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") activeDoc.value = d.id; }}>
+            {d.kind === "model" && dirty.value && <span class="dot" aria-label="unsaved changes" />}
+            <span>{docTitle(d)}</span>
+            <button class="icon-btn close" aria-label={`Close ${docTitle(d)}`}
+              onClick={(e) => { e.stopPropagation(); if (d.kind === "model") closeModel(); else closeDoc(d.id); }}>
+              <Icon name="close" />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ModelDocument() {
   const m = model.value;
   const viewRef = useRef<number | null>(null);
@@ -79,27 +115,29 @@ function ModelDocument() {
   const tabs: { id: ModelTab; label: string }[] = [
     { id: "interface", label: "Interface" }, { id: "info", label: "Info" }, { id: "code", label: "Code" },
   ];
+  const doc = docs.value.find((d) => d.id === activeDoc.value) ?? docs.value[0];
   return (
     <div class="split">
-      <div class="doc-tabs" role="tablist" aria-label="Documents">
-        <div class="doc-tab" role="tab" aria-selected="true" title={m.path}>
-          {dirty.value && <span class="dot" aria-label="unsaved changes" />}
-          <span>{m.name}</span>
-          <button class="icon-btn" aria-label={`Close ${m.name}`} onClick={() => closeModel()}><Icon name="close" /></button>
-        </div>
-      </div>
-      <div class="subtabs" role="tablist" aria-label="Model tabs">
-        {tabs.map((t) => (
-          <button role="tab" aria-selected={modelTab.value === t.id} onClick={() => { modelTab.value = t.id; }}>{t.label}</button>
-        ))}
-        <span class="spacer" />
-        {notApplied.value && modelTab.value !== "code" && <span class="note">Code changed, not applied</span>}
-        <button class="icon-btn" aria-label="Inspectors" title="Inspectors (Ctrl+I)" aria-pressed={rightOpen.value}
-          onClick={() => { rightOpen.value = !rightOpen.value; }}><Icon name="panelRight" /></button>
-      </div>
-      {modelTab.value === "interface" && <InterfaceTab />}
-      {modelTab.value === "info" && <InfoTab />}
-      {modelTab.value === "code" && <CodeTab />}
+      <DocTabs />
+      {doc?.kind === "model" || !doc ? (
+        <>
+          <div class="subtabs" role="tablist" aria-label="Model tabs">
+            {tabs.map((t) => (
+              <button role="tab" aria-selected={modelTab.value === t.id} onClick={() => { modelTab.value = t.id; }}>{t.label}</button>
+            ))}
+            <span class="spacer" />
+            {notApplied.value && modelTab.value !== "code" && <span class="note">Code changed, not applied</span>}
+            <button class="icon-btn" aria-label="Inspectors" title="Inspectors (Ctrl+I)" aria-pressed={rightOpen.value}
+              onClick={() => { rightOpen.value = !rightOpen.value; }}><Icon name="panelRight" /></button>
+          </div>
+          {modelTab.value === "interface" && <InterfaceTab />}
+          {modelTab.value === "info" && <InfoTab />}
+          {modelTab.value === "code" && <CodeTab />}
+        </>
+      ) : doc.kind === "project" ? <ProjectDoc />
+        : doc.kind === "secrets" ? <SecretsDoc />
+        : doc.kind === "experiment" ? <ExperimentDoc name={doc.name} />
+        : <DashboardDoc runId={doc.runId} dir={doc.dir} />}
     </div>
   );
 }

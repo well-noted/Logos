@@ -297,3 +297,26 @@ pre.log { max-height: 160px; overflow: auto; font-size: 11px; background: var(--
 .popout { position: fixed; right: 20px; bottom: 210px; z-index: 40; background: var(--bg-panel); border: 1px solid var(--control-border); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.25); display: flex; flex-direction: column; resize: both; overflow: hidden; width: 420px; height: 460px; min-width: 200px; min-height: 160px; }
 .popout header { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; border-bottom: 1px solid var(--border); font-size: 12px; cursor: move; }
 .popout canvas { flex: 1; min-height: 0; width: 100%; background: #000; image-rendering: pixelated; object-fit: contain; }
+
+/* ---- document pages: project, secrets, experiments --------------------------------------- */
+
+.doc-page { flex: 1; min-height: 0; overflow: auto; padding: 16px 24px; background: var(--bg-panel); }
+.doc-page h2 { margin: 0 0 6px; font-size: 18px; font-weight: 600; }
+.doc-page h3 { margin: 18px 0 6px; font-size: 14px; font-weight: 600; }
+.grid-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.grid-table th { text-align: left; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--control-border); padding: 4px 8px; }
+.grid-table td { border-bottom: 1px solid var(--border); padding: 4px 8px; vertical-align: middle; }
+.grid-table tr.selected td { background: var(--bg-selected); }
+.grid-table tr.clickable { cursor: pointer; }
+.grid-table tr.clickable:hover td { background: var(--bg-hover); }
+.findings { list-style: none; padding: 0; margin: 0; font-size: 12px; display: grid; gap: 3px; }
+.doc-tab button.close { margin-left: 2px; }
+.doc-tab.inactive { background: var(--bg-side); font-weight: 400; color: var(--text-muted); cursor: pointer; }
+.form-grid { display: grid; grid-template-columns: 180px 1fr; gap: 6px 12px; align-items: center; max-width: 900px; }
+.form-grid label { color: var(--text-muted); font-size: 12px; }
+.form-grid textarea { font-family: var(--code-font); min-height: 44px; }
+.bar { height: 8px; background: var(--bg-hover); border-radius: 4px; overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--accent); }
+.stat { display: inline-flex; flex-direction: column; padding: 6px 14px 6px 0; }
+.stat b { font-size: 18px; font-weight: 600; }
+.stat span { font-size: 11px; color: var(--text-muted); }

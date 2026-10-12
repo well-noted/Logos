@@ -4,6 +4,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod engine;
+mod experiments;
+mod lsp;
+mod project;
 mod session;
 mod settings;
 mod values;
@@ -37,6 +40,13 @@ pub struct EngineStatus {
 
 struct Core {
     store: Store,
+    lsp: Mutex<Option<Arc<lsp::LspProxy>>>,
+    /// The passphrase of the encrypted secrets file, when there is no credential store and the
+    /// user typed it in this session. Kept in memory only.
+    passphrase: Mutex<Option<String>>,
+    studies: Arc<experiments::Studies>,
+    /// The engine's bridge configuration, for the bridges experiments start.
+    bridge_config: Mutex<Option<logos_bridge_client::BridgeConfig>>,
     settings: Mutex<Settings>,
     engine: Mutex<EngineStatus>,
     sessions: Mutex<Option<Arc<Sessions>>>,
@@ -100,11 +110,40 @@ impl Core {
             ..base.clone()
         });
         let config = engine::run_config(&install.path, &install.version, jar, 0);
+        *self.bridge_config.lock().unwrap() = Some(config.clone());
         match Bridge::spawn(&config) {
             Ok(bridge) => {
                 let hello = serde_json::to_value(bridge.hello()).ok();
                 let bridge = Arc::new(bridge);
-                *self.sessions.lock().unwrap() = Some(Sessions::new(bridge, self.emit.clone()));
+                let sessions = Sessions::new(bridge, self.emit.clone());
+                *self.sessions.lock().unwrap() = Some(sessions.clone());
+                // The language server checks code in its own bridge (D-25), capped so that
+                // both bridges fit beside each other.
+                let mut check = engine::run_config(
+                    &install.path,
+                    &install.version,
+                    engine::bridge_jar().unwrap_or_default(),
+                    CHECK_BRIDGE_HEAP_MB,
+                );
+                check.java = config.java.clone();
+                let emit = self.emit.clone();
+                let s2 = sessions.clone();
+                let apply: Arc<dyn Fn(lsp::OutsideEdits, String) -> bool + Send + Sync> =
+                    Arc::new(move |edits: lsp::OutsideEdits, server_text: String| {
+                        let Some(path) = edits.first().map(|e| e.0.clone()) else {
+                            return false;
+                        };
+                        let edits = edits.into_iter().map(|(_, r, t)| (r, t)).collect();
+                        match s2.apply_outside_edits(&path, &server_text, edits) {
+                            Some((id, _)) => {
+                                emit("model-widgets", json!({ "model": id }));
+                                true
+                            }
+                            None => false,
+                        }
+                    });
+                *self.lsp.lock().unwrap() =
+                    Some(lsp::LspProxy::start(Some(check), self.emit.clone(), apply));
                 self.set_engine(EngineStatus {
                     state: "ready".into(),
                     hello,
@@ -133,6 +172,10 @@ impl Core {
 }
 
 type CoreState<'a> = State<'a, Arc<Core>>;
+
+/// Heap limit of the language server's check bridge (D-25). It compiles code and never runs
+/// models; Phase 2 measurements may change this.
+const CHECK_BRIDGE_HEAP_MB: u32 = 1024;
 
 /// Runs blocking work off the main thread.
 async fn blocking<T: Send + 'static>(
@@ -432,10 +475,289 @@ async fn model_outline(core: CoreState<'_>, id: u64) -> AppResult<Vec<OutlineEnt
     blocking(move || core.sessions()?.outline(id)).await
 }
 
+// ---------------------------------------------------------------------------- language server
+
+#[tauri::command]
+fn lsp_send(core: CoreState, message: String) -> AppResult<()> {
+    let proxy = core.lsp.lock().unwrap().clone();
+    let Some(proxy) = proxy else {
+        return Err(AppError::new("the language server isn't running"));
+    };
+    let sessions = core.sessions.lock().unwrap().clone();
+    proxy.editor_message(&message, |path| sessions.as_ref()?.text_of(path));
+    Ok(())
+}
+
+#[tauri::command]
+fn lsp_code_uri(core: CoreState, id: u64) -> AppResult<String> {
+    let s = core.sessions()?.get(id)?;
+    lsp::LspProxy::code_uri(&s.path).ok_or_else(|| AppError::new("the model's path can't be a URI"))
+}
+
+#[tauri::command]
+async fn model_widgets(core: CoreState<'_>, id: u64) -> AppResult<Vec<logos_nlogox::Widget>> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let s = core.sessions()?;
+        let widgets = s.widgets_of(id)?;
+        if let (Some(proxy), Some(m)) = (core.lsp.lock().unwrap().clone(), s.get(id).ok())
+            && let Some(text) = s.text_of(&m.path)
+        {
+            proxy.refresh(&m.path, &text);
+        }
+        Ok(widgets)
+    })
+    .await
+}
+
+// ------------------------------------------------------------------------- projects, secrets
+
+fn model_path(core: &Core, id: u64) -> AppResult<PathBuf> {
+    Ok(core.sessions()?.get(id)?.path.clone())
+}
+
+#[tauri::command]
+async fn project_status(core: CoreState<'_>, id: u64) -> AppResult<project::ProjectView> {
+    let core = core.inner().clone();
+    blocking(move || project::status(&model_path(&core, id)?)).await
+}
+
+#[tauri::command]
+async fn project_detect(
+    core: CoreState<'_>,
+    id: u64,
+    code: String,
+) -> AppResult<project::DetectionView> {
+    let core = core.inner().clone();
+    blocking(move || project::detect_for(&model_path(&core, id)?, &code)).await
+}
+
+#[tauri::command]
+async fn project_init(
+    core: CoreState<'_>,
+    id: u64,
+    choice: project::InitChoice,
+) -> AppResult<project::ProjectView> {
+    let core = core.inner().clone();
+    blocking(move || project::init(&model_path(&core, id)?, &choice)).await
+}
+
+#[tauri::command]
+async fn project_set_role(
+    core: CoreState<'_>,
+    id: u64,
+    path: String,
+    role: String,
+) -> AppResult<project::ProjectView> {
+    let core = core.inner().clone();
+    blocking(move || project::set_file_role(&model_path(&core, id)?, &path, &role)).await
+}
+
+#[tauri::command]
+async fn project_check(core: CoreState<'_>, id: u64) -> AppResult<Vec<project::FindingView>> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let pass = core.passphrase.lock().unwrap().clone();
+        project::check_project(&model_path(&core, id)?, pass.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn secrets_list(core: CoreState<'_>, id: u64) -> AppResult<project::SecretsView> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let pass = core.passphrase.lock().unwrap().clone();
+        project::list(&model_path(&core, id)?, pass.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn secrets_unlock(
+    core: CoreState<'_>,
+    id: u64,
+    passphrase: String,
+) -> AppResult<project::SecretsView> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let view = project::list(&model_path(&core, id)?, Some(&passphrase))?;
+        *core.passphrase.lock().unwrap() = Some(passphrase);
+        Ok(view)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn secret_set(
+    core: CoreState<'_>,
+    id: u64,
+    name: String,
+    value: String,
+    scope: String,
+) -> AppResult<()> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let pass = core.passphrase.lock().unwrap().clone();
+        project::set(
+            &model_path(&core, id)?,
+            pass.as_deref(),
+            &name,
+            &value,
+            &scope,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn secret_delete(
+    core: CoreState<'_>,
+    id: u64,
+    name: String,
+    scope: String,
+) -> AppResult<bool> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let pass = core.passphrase.lock().unwrap().clone();
+        project::delete(&model_path(&core, id)?, pass.as_deref(), &name, &scope)
+    })
+    .await
+}
+
+/// Shows a value to the user, who confirmed it in the front end. Logged by name and time.
+#[tauri::command]
+async fn secret_unmask(core: CoreState<'_>, id: u64, name: String) -> AppResult<String> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let pass = core.passphrase.lock().unwrap().clone();
+        project::reveal(&model_path(&core, id)?, pass.as_deref(), &name, "unmask")
+    })
+    .await
+}
+
+/// Copies a value to the clipboard and clears it after 30 seconds if it is still there.
+#[tauri::command]
+async fn secret_copy(
+    app: tauri::AppHandle,
+    core: CoreState<'_>,
+    id: u64,
+    name: String,
+) -> AppResult<()> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let core = core.inner().clone();
+    let value = blocking(move || {
+        let pass = core.passphrase.lock().unwrap().clone();
+        project::reveal(&model_path(&core, id)?, pass.as_deref(), &name, "copy")
+    })
+    .await?;
+    app.clipboard()
+        .write_text(value.clone())
+        .map_err(|e| AppError::new(e.to_string()))?;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        if app.clipboard().read_text().is_ok_and(|t| t == value) {
+            let _ = app.clipboard().write_text(String::new());
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn secrets_recent() -> Vec<String> {
+    project::recent_access(8)
+}
+
+// ----------------------------------------------------------------------------- experiments
+
+#[tauri::command]
+async fn experiments_list(
+    core: CoreState<'_>,
+    id: u64,
+) -> AppResult<Vec<experiments::ExperimentView>> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let s = core.sessions()?;
+        let path = s.get(id)?.path.clone();
+        let text = s.text_of(&path).unwrap_or_default();
+        experiments::list(&path, &text)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn experiment_save_settings(
+    core: CoreState<'_>,
+    id: u64,
+    name: String,
+    settings: experiments::LogosSettings,
+) -> AppResult<()> {
+    let core = core.inner().clone();
+    blocking(move || experiments::save_settings(&model_path(&core, id)?, &name, &settings)).await
+}
+
+#[tauri::command]
+async fn experiment_run(
+    core: CoreState<'_>,
+    id: u64,
+    name: String,
+    settings: experiments::LogosSettings,
+    resume: Option<PathBuf>,
+) -> AppResult<u64> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let s = core.sessions()?;
+        let session = s.get(id)?;
+        if session.is_dirty() {
+            return Err(AppError::new(
+                "Save the model first: experiments run the model file as it is on disk.",
+            ));
+        }
+        let config = core
+            .bridge_config
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| AppError::new("NetLogo isn't running"))?;
+        let req = experiments::StartRequest {
+            model: session.path.clone(),
+            experiment: name,
+            settings,
+            resume,
+            config,
+            passphrase: core.passphrase.lock().unwrap().clone(),
+        };
+        core.studies.start(req, core.emit.clone())
+    })
+    .await
+}
+
+#[tauri::command]
+fn study_status(core: CoreState, id: u64) -> AppResult<experiments::StudyView> {
+    core.studies.get(id)
+}
+
+#[tauri::command]
+fn study_stop(core: CoreState, id: u64) -> AppResult<()> {
+    core.studies.stop(id)
+}
+
+#[tauri::command]
+async fn results_past(core: CoreState<'_>, id: u64) -> AppResult<Vec<experiments::PastRun>> {
+    let core = core.inner().clone();
+    blocking(move || Ok(experiments::past(&model_path(&core, id)?))).await
+}
+
+#[tauri::command]
+async fn results_read(dir: PathBuf) -> AppResult<Json> {
+    blocking(move || experiments::read_results(&dir, 2000)).await
+}
+
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let dir = app
                 .path()
@@ -455,6 +777,10 @@ fn main() {
                     ..EngineStatus::default()
                 }),
                 sessions: Mutex::new(None),
+                lsp: Mutex::new(None),
+                passphrase: Mutex::new(None),
+                studies: Arc::new(experiments::Studies::default()),
+                bridge_config: Mutex::new(None),
                 emit,
             });
             app.manage(core.clone());
@@ -492,6 +818,28 @@ fn main() {
             model_save,
             model_apply,
             model_outline,
+            model_widgets,
+            lsp_send,
+            lsp_code_uri,
+            project_status,
+            project_detect,
+            project_init,
+            project_set_role,
+            project_check,
+            secrets_list,
+            secrets_unlock,
+            secret_set,
+            secret_delete,
+            secret_unmask,
+            secret_copy,
+            secrets_recent,
+            experiments_list,
+            experiment_save_settings,
+            experiment_run,
+            study_status,
+            study_stop,
+            results_past,
+            results_read,
         ])
         .build(tauri::generate_context!())
         .expect("start Logos");

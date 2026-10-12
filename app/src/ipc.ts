@@ -112,6 +112,7 @@ export const ipc = {
   setInfo: (id: number, info: string) => invoke<boolean>("model_set_info", { id, info }),
   save: (id: number) => invoke<void>("model_save", { id }),
   apply: (id: number) => invoke<ModelView>("model_apply", { id }),
+  widgets: (id: number) => invoke<Widget[]>("model_widgets", { id }),
   outline: (id: number) => invoke<OutlineEntry[]>("model_outline", { id }),
 };
 
@@ -122,6 +123,7 @@ export interface Events {
   "model-ticks": { model: number; ticks: number | null };
   "model-run": { model: number; running: boolean; button?: number | null; reason?: string | null; error?: AppError | null };
   "model-error": { model: number; error: AppError };
+  "model-widgets": { model: number };
 }
 
 export function on<K extends keyof Events>(name: K, f: (payload: Events[K]) => void): Promise<UnlistenFn> {
