@@ -4,7 +4,7 @@ Phase 1 turns the Phase 0 spikes into a core that a researcher can use from the 
 
 - **Projects:** a model and the files around it (data, Python modules, settings) as one unit, described in a project file that NetLogo ignores (D-19).
 - **Experiments:** BehaviorSpace experiments run on parallel workspaces, with results in Parquet and a provenance record for every run.
-- **Models that call language models:** every LLM call made during a run is recorded, can be replayed exactly, and counts against a budget.
+- **Models that call language models:** moved to Phase 3 (D-20). Part L below is kept as the specification to start from.
 - **Language support:** NetLogo code gets a full expression parser, NetLogo's own compile errors, and editor features through a language server.
 
 Engine: NetLogo 7.0.4 (D-05). Test models: AA4-Combined (D-15) and MASTOC-LLM (Thomas's model; `extensions [ py ]`, a Python bridge module, LLM calls to Anthropic, OpenAI-compatible endpoints and Ollama).
@@ -119,6 +119,8 @@ An interrupted experiment can be resumed: runs whose records are complete are sk
 
 ## Part L: models that call language models
 
+**Moved to Phase 3 (D-20).** Recording and replaying a model's LLM calls needs provider accounts and keys set up for testing, which is easier once Logos has a user interface. This part stays here as the specification to start from; its criteria are not part of Phase 1.
+
 ### Scope
 
 During a run, a model may call a language model, as MASTOC-LLM does from Python through the `py` extension. Those calls are slow, cost money and give different answers each time, so seeded reproducibility (A3, A12) no longer holds for these models. Part L makes such runs recordable, replayable and bounded.
@@ -195,10 +197,10 @@ logos lsp                         language server (Part S)
 6. Reference tables for E1: record NetLogo's headless output for AA4's eight experiments and the library experiments. E1.
 7. Parquet writer. E2.
 8. Run records and resume. E3, E4, E5.
-9. L0 spike: client base URLs, streaming, Python randomness (findings written to `docs/phase-1-results.md`).
-10. Recording proxy and LLM call store. L1, L3, L5, K2.
-11. Replay. L2.
-12. Budgets and caching. L4.
+9. (Moved to Phase 3, D-20.) L0 spike: client base URLs, streaming, Python randomness (findings written to `docs/phase-1-results.md`).
+10. (Moved to Phase 3.) Recording proxy and LLM call store. L1, L3, L5, K2.
+11. (Moved to Phase 3.) Replay. L2.
+12. (Moved to Phase 3.) Budgets and caching. L4.
 13. Expression parser. S2, S6.
 14. Bridge method for NetLogo's resolved references; S1 check.
 15. Diagnostics through the bridge. S4.
@@ -216,6 +218,7 @@ logos lsp                         language server (Part S)
 - The in-app assistant (D-04) and connecting coding assistants through the MCP server (Phase 2-3). Part L records the model's own LLM calls; it is not the assistant.
 - Logos's own LLM bridge for models (Phase 2). Part L records and replays calls made by any bridge, including MASTOC-LLM's and, later, Logos's.
 - 3D models.
+- Recording, replay and budgets for models that call language models (Part L; Phase 3, D-20).
 
 ## Phase 1 is done when
 

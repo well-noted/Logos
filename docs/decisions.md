@@ -131,3 +131,7 @@ The conversion stays as it is. Logos's interface editor gets a command that lays
 ## D-19 Models move freely between Logos and NetLogo — accepted
 
 A model made or edited in Logos opens in NetLogo 7.0.4 without changes, and a model made in NetLogo opens in Logos without changes. `.nlogox` stays the model file; Logos never requires anything inside it that NetLogo doesn't understand, and keeps everything NetLogo writes that Logos doesn't understand (Spike B, B1-B3). Anything Logos adds beyond NetLogo (project settings, experiment results, notebooks, file descriptions) lives in separate files next to the model, so NetLogo ignores it and a NetLogo user loses nothing. Stated by Thomas, 2026-10-11.
+
+## D-20 Recording models' LLM calls moves to Phase 3 — accepted
+
+Phase 1 Part L (recording, replaying and budgeting the LLM calls a model makes during runs) moves to Phase 3, where Logos has a user interface. Testing it needs provider accounts and keys set up on Thomas's machine, which is easier to do and to inspect through the desktop app. Phase 1 continues with Part S. The Part L specification stays in `phase-1-spec.md` as the starting point. Nothing built in Phase 1 depends on it: secrets (Part K) already reach the engine, so models such as MASTOC-LLM can run through `logos run`, unrecorded.
