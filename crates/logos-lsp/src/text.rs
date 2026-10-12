@@ -36,3 +36,69 @@ mod tests {
         assert_eq!(byte_range(&m, 9, 12), 8..8);
     }
 }
+
+/// Line starts of a text, for converting between byte offsets and LSP positions (line and
+/// UTF-16 column).
+#[derive(Debug, Clone)]
+pub struct LineIndex {
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    pub fn new(text: &str) -> LineIndex {
+        let mut starts = vec![0];
+        for (i, b) in text.bytes().enumerate() {
+            if b == b'\n' {
+                starts.push(i + 1);
+            }
+        }
+        LineIndex { starts }
+    }
+
+    /// (line, UTF-16 column) of a byte offset.
+    pub fn position(&self, text: &str, offset: usize) -> (u32, u32) {
+        let offset = offset.min(text.len());
+        let line = self.starts.partition_point(|&s| s <= offset) - 1;
+        let start = self.starts[line];
+        let col: usize = text[start..offset].chars().map(char::len_utf16).sum();
+        (line as u32, col as u32)
+    }
+
+    /// The byte offset of (line, UTF-16 column), clamped to the line.
+    pub fn offset(&self, text: &str, line: u32, col: u32) -> usize {
+        let Some(&start) = self.starts.get(line as usize) else {
+            return text.len();
+        };
+        let end = self
+            .starts
+            .get(line as usize + 1)
+            .copied()
+            .unwrap_or(text.len());
+        let mut units = 0u32;
+        for (i, c) in text[start..end].char_indices() {
+            if units >= col || c == '\n' || c == '\r' {
+                return start + i;
+            }
+            units += c.len_utf16() as u32;
+        }
+        end
+    }
+}
+
+#[cfg(test)]
+mod line_tests {
+    use super::*;
+
+    #[test]
+    fn converts_positions() {
+        let t = "ab\r\nc\u{1F600}d\n";
+        let ix = LineIndex::new(t);
+        assert_eq!(ix.position(t, 0), (0, 0));
+        assert_eq!(ix.position(t, 4), (1, 0));
+        let d = t.find('d').unwrap();
+        assert_eq!(ix.position(t, d), (1, 3));
+        assert_eq!(ix.offset(t, 1, 3), d);
+        assert_eq!(ix.offset(t, 0, 99), 2);
+        assert_eq!(ix.offset(t, 9, 0), t.len());
+    }
+}

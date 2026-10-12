@@ -172,8 +172,11 @@ Errors: `1001 CompilerError`, `1002 RuntimeError`.
 
 Compiles `source`, a version of the model's code section, the way opening the model would (with the workspace's interface globals, extensions, include files and system dynamics code), without installing it: the workspace keeps running the code it has. Returns NetLogo's compile errors; NetLogo stops at the first, so there is at most one. Editors call it as the user types (D-07).
 
+`interfaceGlobals`, when given, replaces the workspace's interface globals. A model whose code didn't compile when it was opened has none in its workspace, so editors pass the globals of the model's widgets. Include files are read from disk.
+
 ```
-params: { "workspace": WorkspaceId, "source": string }
+params: { "workspace": WorkspaceId, "source": string,
+          "interfaceGlobals"?: [string] }
 result: { "errors": [ { "message": string, "span": SourceSpan } ] }
 ```
 

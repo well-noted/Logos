@@ -13,7 +13,7 @@ mod tree;
 
 use std::ops::Range;
 
-pub use text::DecodeError;
+pub use text::{DecodeError, Decoded};
 pub use tree::{Attribute, Element, Node, ParseError};
 
 /// An `.nlogox` file.
@@ -95,6 +95,16 @@ impl Nlogox {
     pub fn code(&self) -> Result<String, DecodeError> {
         self.section("code")
             .map_or(Ok(String::new()), |e| self.element_text(e))
+    }
+
+    /// The model's code with a map to offsets in the file, for editors. `None` when the file
+    /// has no `<code>` section or the section is an empty-element tag.
+    pub fn code_mapped(&self) -> Option<Result<Decoded, DecodeError>> {
+        let content = self.section("code")?.content.clone()?;
+        Some(text::decode_content_mapped(
+            self.raw(&content),
+            content.start,
+        ))
     }
 
     /// The Info tab text (the `<info>` section).

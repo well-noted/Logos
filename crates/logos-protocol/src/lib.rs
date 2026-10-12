@@ -370,6 +370,10 @@ pub struct ArgType {
 pub struct CheckParams<'a> {
     pub workspace: WorkspaceId,
     pub source: &'a str,
+    /// The globals the model's widgets define; `None` uses the workspace's. A model that
+    /// didn't compile when it was opened has none in the workspace.
+    #[serde(rename = "interfaceGlobals", skip_serializing_if = "Option::is_none")]
+    pub interface_globals: Option<&'a [String]>,
 }
 
 /// Result of `workspace.check`: NetLogo's compile errors for the code (at most one; NetLogo

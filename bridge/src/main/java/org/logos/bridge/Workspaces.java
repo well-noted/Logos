@@ -146,7 +146,9 @@ final class Workspaces {
                     onThread(idle(handle(params)), reply, h -> ProgramInfo.of(h.ws));
                 case "workspace.check" -> {
                     String source = string(params, "source");
-                    onThread(idle(handle(params)), reply, h -> Check.of(h.ws, source));
+                    List<String> globals = params.get("interfaceGlobals") == null ? null
+                            : stringList(params, "interfaceGlobals");
+                    onThread(idle(handle(params)), reply, h -> Check.of(h.ws, source, globals));
                 }
                 case "workspace.references" -> {
                     String source = string(params, "source");
