@@ -5,27 +5,42 @@ use std::ops::Range;
 
 use rowan::{GreenNode, GreenNodeBuilder};
 
+use crate::expr::{LocalDefinition, LocalKind, Names, Reference, parse_body};
 use crate::lexer::Token;
 use crate::{SyntaxError, SyntaxKind, SyntaxKind::*};
 
-pub(crate) fn parse(source: &str, tokens: &[Token]) -> (GreenNode, Vec<SyntaxError>) {
+type Parsed = (
+    GreenNode,
+    Vec<SyntaxError>,
+    Vec<Reference>,
+    Vec<LocalDefinition>,
+);
+
+/// Parses the structure; with `names`, procedure bodies are parsed into statements too.
+pub(crate) fn parse(source: &str, tokens: &[Token], names: Option<&Names>) -> Parsed {
     let mut p = Parser {
         source,
         tokens,
         pos: 0,
         builder: GreenNodeBuilder::new(),
         errors: Vec::new(),
+        names,
+        references: Vec::new(),
+        locals: Vec::new(),
     };
     p.source_file();
-    (p.builder.finish(), p.errors)
+    (p.builder.finish(), p.errors, p.references, p.locals)
 }
 
-struct Parser<'a> {
+struct Parser<'a, 'n> {
     source: &'a str,
     tokens: &'a [Token],
     pos: usize,
     builder: GreenNodeBuilder<'static>,
     errors: Vec<SyntaxError>,
+    names: Option<&'a Names<'n>>,
+    references: Vec<Reference>,
+    locals: Vec<LocalDefinition>,
 }
 
 /// Keywords that start a declaration at the top level.
@@ -41,7 +56,7 @@ fn is_declaration_keyword(word: &str) -> bool {
     ) || (word.ends_with("-own") && word.len() > "-own".len())
 }
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     fn at_end(&self) -> bool {
         self.pos >= self.tokens.len()
     }
@@ -206,11 +221,89 @@ impl Parser<'_> {
         }
         // Trivia after the header stays in the procedure; the body starts after it.
         self.eat_trivia();
+        let mut params = Vec::new();
         if self.kind() == Some(L_BRACKET) && named {
+            let from = self.pos;
             self.name_list(PARAM_LIST, false);
+            for t in &self.tokens[from..self.pos] {
+                if t.kind == IDENT {
+                    let name = self.source[t.span.clone()].to_ascii_uppercase();
+                    self.locals.push(LocalDefinition {
+                        name: name.clone(),
+                        span: t.span.clone(),
+                        kind: LocalKind::Parameter,
+                    });
+                    params.push((name, t.span.clone()));
+                }
+            }
         }
-        self.body(header_start..header_end);
+        if let Some(names) = self.names {
+            self.full_body(header_start..header_end, names, &params);
+        } else {
+            self.body(header_start..header_end);
+        }
         self.builder.finish_node();
+    }
+
+    /// Where the body that starts at the current token ends: at `end`, at the next `to` or
+    /// `to-report`, or at a bracketed declaration outside any brackets. The same rules as
+    /// [`Parser::body`].
+    fn body_end(&self) -> usize {
+        let mut depth = 0usize;
+        let mut i = self.pos;
+        while i < self.tokens.len() {
+            let t = &self.tokens[i];
+            if t.kind == IDENT {
+                let w = self.source[t.span.clone()].to_ascii_lowercase();
+                if w == "end" || w == "to" || w == "to-report" {
+                    return i;
+                }
+                if depth == 0
+                    && is_declaration_keyword(&w)
+                    && self.tokens[i + 1..]
+                        .iter()
+                        .find(|t| !t.kind.is_trivia())
+                        .is_some_and(|t| t.kind == L_BRACKET)
+                {
+                    return i;
+                }
+            }
+            match t.kind {
+                L_BRACKET | L_PAREN => depth += 1,
+                R_BRACKET | R_PAREN => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            i += 1;
+        }
+        i
+    }
+
+    fn full_body(
+        &mut self,
+        header: Range<usize>,
+        names: &Names,
+        params: &[(String, Range<usize>)],
+    ) {
+        let end = self.body_end();
+        self.builder.start_node(BODY.into());
+        let result = parse_body(
+            self.source,
+            self.tokens,
+            self.pos..end,
+            names,
+            params,
+            &mut self.builder,
+        );
+        self.builder.finish_node();
+        self.errors.extend(result.errors);
+        self.references.extend(result.references);
+        self.locals.extend(result.locals);
+        self.pos = end;
+        if self.word().as_deref() == Some("end") {
+            self.bump();
+        } else {
+            self.error(header, "missing END");
+        }
     }
 
     fn body(&mut self, header: Range<usize>) {
