@@ -3,11 +3,11 @@
 // is a command, which runs between iterations when the model is running (G1).
 
 import { useEffect, useState } from "preact/hooks";
-import { ipc } from "./ipc";
+import { errorText, ipc } from "./ipc";
 import { PropertySheet, editMode } from "./editor";
 import { Icon } from "./icons";
 import {
-  inspected, model, monitors, outline, pauseWhen, rightOpen, runCommand, running, stopModel, ticks, watches,
+  inspected, model, monitors, outline, pauseNote, pauseWhen, rightOpen, runCommand, ticks, watches,
 } from "./state";
 
 const TURTLE_VARS = ["who", "color", "heading", "xcor", "ycor", "shape", "label", "label-color", "breed", "hidden?", "size", "pen-size", "pen-mode"];
@@ -167,28 +167,27 @@ function Watches() {
 
 function PauseWhen() {
   const m = model.value;
-  const pulse = monitors.value;
-  const [state, setState] = useState("");
+  const [error, setError] = useState("");
+  // The host makes it the run's stop condition (G6), checked after every iteration; a run in
+  // progress takes a change from its next iteration.
   useEffect(() => {
-    const cond = pauseWhen.value.trim();
-    if (!m || !cond || !running.value) return;
-    ipc.observe(m.id, [cond]).then((r) => {
-      const v = r.values[0];
-      if (!v?.ok) { setState(`Can't evaluate: ${v?.text}`); return; }
-      if (v.text === "true") { setState(`Paused at tick ${r.ticks ?? "?"}: the condition became true`); stopModel(); }
-      else if (v.text !== "false") setState("The condition must report true or false");
-      else setState("");
-    }).catch(() => {});
-  }, [pulse]);
+    if (!m) return;
+    const cond = pauseWhen.value;
+    const timer = setTimeout(() => {
+      ipc.pauseWhen(m.id, cond).then(() => setError("")).catch((e) => setError(errorText(e)));
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [pauseWhen.value, m?.id]);
   return (
     <section aria-label="Pause when" style="margin-top: 10px">
       <div class="panel-head" style="padding: 0"><span>Pause when</span></div>
       <input type="text" class="mono" style="width:100%" placeholder="e.g. count turtles < 5" aria-label="Pause when this reports true"
-        value={pauseWhen.value} onInput={(e) => { pauseWhen.value = (e.target as HTMLInputElement).value; }} />
+        value={pauseWhen.value} onInput={(e) => { pauseWhen.value = (e.target as HTMLInputElement).value; pauseNote.value = ""; }} />
       <p class="empty-note" style="padding: 4px 0">
-        Checked with each monitor update while the model runs. Stopping exactly after the iteration where it becomes true needs the bridge's stop condition (G6).
+        Checked after every iteration of a forever button. The run stops after the iteration where it reports true.
       </p>
-      {state && <p class="empty-note" role="status" style="padding: 0; color: var(--warning)">{state}</p>}
+      {error && <p class="empty-note" role="alert" style="padding: 0; color: var(--error)">{error}</p>}
+      {pauseNote.value && <p class="empty-note" role="status" style="padding: 0; color: var(--warning)">{pauseNote.value}</p>}
     </section>
   );
 }

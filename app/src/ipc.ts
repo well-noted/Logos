@@ -112,6 +112,8 @@ export const ipc = {
   setInfo: (id: number, info: string) => invoke<{ dirty: boolean; canUndo: boolean; canRedo: boolean }>("model_set_info", { id, info }),
   save: (id: number) => invoke<void>("model_save", { id }),
   apply: (id: number) => invoke<ModelView>("model_apply", { id }),
+  applyCheck: (id: number) => invoke<{ applied: boolean; worldCleared: boolean; losses: Loss[] }>("model_apply_check", { id }),
+  pauseWhen: (id: number, condition: string) => invoke<void>("model_pause_when", { id, condition }),
   widgets: (id: number) => invoke<Widget[]>("model_widgets", { id }),
   outline: (id: number) => invoke<OutlineEntry[]>("model_outline", { id }),
 };
@@ -124,7 +126,11 @@ export interface Events {
   "model-run": { model: number; running: boolean; button?: number | null; reason?: string | null; error?: AppError | null };
   "model-error": { model: number; error: AppError };
   "model-widgets": { model: number };
+  "model-plots": { model: number; full: boolean; plots: import("./plots").PlotData[] };
 }
+
+/** Something the world loses when edited code is applied (G5). */
+export interface Loss { kind: string; name: string; breed?: string; agents?: number }
 
 export function on<K extends keyof Events>(name: K, f: (payload: Events[K]) => void): Promise<UnlistenFn> {
   return listen<Events[K]>(name, (e) => f(e.payload));
