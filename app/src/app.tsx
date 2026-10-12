@@ -15,6 +15,7 @@ import { SettingsDialog } from "./settings";
 import { Launcher } from "./launcher";
 import { ProjectDoc, SecretsDoc } from "./project";
 import { DashboardDoc, ExperimentDoc } from "./experiments";
+import { DataDoc } from "./data";
 import { frames } from "./frames";
 import { ipc } from "./ipc";
 import {
@@ -74,6 +75,7 @@ function docTitle(d: Doc): string {
     case "secrets": return "Secrets";
     case "experiment": return `Experiment ${d.name}`;
     case "dashboard": return `Run: ${d.name}`;
+    case "data": return d.path.split("/").pop() ?? d.path;
   }
 }
 
@@ -138,6 +140,7 @@ function ModelDocument() {
       ) : doc.kind === "project" ? <ProjectDoc />
         : doc.kind === "secrets" ? <SecretsDoc />
         : doc.kind === "experiment" ? <ExperimentDoc name={doc.name} docId={doc.id} />
+        : doc.kind === "data" ? <DataDoc path={doc.path} />
         : <DashboardDoc runId={doc.runId} dir={doc.dir} />}
     </div>
   );

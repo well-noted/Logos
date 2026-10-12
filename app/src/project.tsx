@@ -14,6 +14,13 @@ const ROLES = ["input", "output", "code", "config"];
 
 // ---- the Files panel ----------------------------------------------------------------------
 
+/** Opens a project file: data files (input and output) get a preview with their dictionary. */
+function openFile(path: string, role: string) {
+  if (role === "input" || role === "output") openDoc({ id: `data-${path}`, kind: "data", path });
+  else if (path.toLowerCase().endsWith(".experiments.toml")) showToast("The Logos settings of each experiment are on its page in the Experiments activity.");
+  else showToast(`Logos doesn't open ${role} files yet.`);
+}
+
 export function FilesPanel() {
   const p = project.value;
   const m = model.value;
@@ -37,7 +44,8 @@ export function FilesPanel() {
           <span class="kind">project</span><span>logos.toml</span></button></li>
         <li><button><span class="kind">model</span><span>{p.model}</span></button></li>
         {p.files.map((f) => (
-          <li><button title={f.exists ? f.path : `${f.path} (doesn't exist yet)`}>
+          <li><button title={f.exists ? f.path : `${f.path} (doesn't exist yet)`}
+            onClick={() => openFile(f.path, f.role)}>
             <span class="kind">{f.role}</span>
             <span style={f.exists ? undefined : "color: var(--text-muted); font-style: italic"}>{f.path}</span>
           </button></li>
@@ -96,7 +104,7 @@ function ProjectSummary({ p }: { p: ProjectView }) {
         <tbody>
           {p.files.map((f) => (
             <tr>
-              <td class="mono">{f.path}</td>
+              <td class="mono"><button class="link-btn" onClick={() => openFile(f.path, f.role)}>{f.path}</button></td>
               <td>
                 <select aria-label={`Role of ${f.path}`} value={f.role} onChange={(e) => setRole(f.path, (e.target as HTMLSelectElement).value)}>
                   {ROLES.map((r) => <option value={r}>{r}</option>)}
