@@ -31,6 +31,11 @@ Built in the cloud and checked there against `app/dev/mock-bridge.py` (Linux, We
 | `phase2/app-shell` | Tauri host, launcher, model screen (Interface, Info, Code), running, view frames, monitors, inspector, themes | Unit tests; screenshots of each screen |
 | `phase2/app-features` | Language server in the Code tab, Outline and Files panels, projects and secrets, experiments, dashboard and results | Unit tests; diagnostics and completion, an experiment run to `table.csv`, no secret value in any file or log |
 | `phase2/interface-editing` | Edit mode: move and resize widgets, add and delete widgets, property sheet, undo and redo | 18 `logos-nlogox` widget tests; dragging, adding a slider and editing its properties in screenshots |
+| `phase2/world-settings` | World size, patch size, wrapping and the other view settings in the view's property sheet; the view's size follows the world | A `logos-nlogox` test that setting the world back gives the original bytes; patch size 4 to 3 in screenshots |
+| `phase2/search` | Search and replace across code, Info and widgets (whole words by NetLogo's name rules, case, regular expressions, a preview of each replacement); git branch and changed files in the status bar | 5 front-end tests; replacing `fertility` with `birth-rate` in AA4 changed only the 9 matches (byte diff) |
+| `phase2/recovery` | Autosave every 30 s and on focus loss to the app data folder, restore with a diff after a crash, reload or ask when another program changes the model | Diff and autosave tests; killing the app and reopening offered the edits with a diff; a change on disk was reloaded within 2 s, and with unsaved edits the app asked |
+
+Not yet built: `.nls` files (the app doesn't open them yet, so search, autosave and watching cover the model file only), editing chooser choices (waiting for an example of how NetLogo 7.0.4 writes number, boolean and list choices), undo across code and interface edits in one history (the code editor and the interface each have their own), the D-18 layout command, plots (G4), and everything that needs protocol 1.
 
 Workarounds until protocol 1: the snapshot is a zero-tick run (G15); writes during a run stop and restart it (G1); speeds below full are stepped runs with a delay (G2); Apply saves and reopens the model, which clears the world (G5); plots show no data (G4).
 
