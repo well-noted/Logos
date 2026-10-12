@@ -2,7 +2,7 @@
 // (design principle 7). Shortcuts are stored per action so they can be rebound later.
 
 import {
-  activeDoc, docs, activityView, applyCode, bottomOpen, bottomTab, closeModel, model, modelTab, openModelDialog,
+  activeDoc, activityView, applyCode, bottomOpen, bottomTab, closeModel, model, modelTab, openModelDialog,
   paletteOpen, rightOpen, running, saveModel, settingsOpen, stepModel, stopModel, viewPopped, engine,
 } from "./state";
 import { canRedo, canUndo, editMode, undoInterface } from "./editor";
@@ -20,9 +20,6 @@ export interface Command {
 }
 
 const hasModel = () => model.value !== null;
-/** Interface edit mode, or an experiment document in front: where Ctrl+Z is Logos's undo. */
-const editingNonCode = () =>
-  editMode.value || docs.value.some((d) => d.id === activeDoc.value && d.kind === "experiment");
 
 export const COMMANDS: Command[] = [
   { id: "file.open", title: "Open model…", menu: "File", key: "Ctrl+O", run: () => openModelDialog() },
@@ -32,9 +29,9 @@ export const COMMANDS: Command[] = [
   { id: "file.close", title: "Close model", menu: "File", key: "Ctrl+W", enabled: hasModel, run: () => { closeModel(); } },
   { id: "file.settings", title: "Settings and themes…", menu: "File", key: "Ctrl+,", run: () => { settingsOpen.value = true; } },
   { id: "view.palette", title: "Show all commands", menu: "View", key: "Ctrl+Shift+P", run: () => { paletteOpen.value = true; } },
-  { id: "view.interface", title: "Go to Interface tab", menu: "View", key: "Ctrl+1", enabled: hasModel, run: () => { modelTab.value = "interface"; } },
-  { id: "view.info", title: "Go to Info tab", menu: "View", key: "Ctrl+2", enabled: hasModel, run: () => { modelTab.value = "info"; } },
-  { id: "view.code", title: "Go to Code tab", menu: "View", key: "Ctrl+3", enabled: hasModel, run: () => { modelTab.value = "code"; } },
+  { id: "view.interface", title: "Go to Interface tab", menu: "View", key: "Ctrl+1", enabled: hasModel, run: () => { activeDoc.value = "model"; modelTab.value = "interface"; } },
+  { id: "view.info", title: "Go to Info tab", menu: "View", key: "Ctrl+2", enabled: hasModel, run: () => { activeDoc.value = "model"; modelTab.value = "info"; } },
+  { id: "view.code", title: "Go to Code tab", menu: "View", key: "Ctrl+3", enabled: hasModel, run: () => { activeDoc.value = "model"; modelTab.value = "code"; } },
   { id: "view.outline", title: "Show model outline", menu: "View", key: "Ctrl+Shift+O",
     run: () => { activityView.value = activityView.value === "model" ? null : "model"; } },
   { id: "view.search", title: "Search and replace in the model", menu: "Edit", key: "Ctrl+Shift+F",
@@ -45,17 +42,22 @@ export const COMMANDS: Command[] = [
   { id: "view.inspector", title: "Show or hide inspectors", menu: "View", key: "Ctrl+I", run: () => { rightOpen.value = !rightOpen.value; } },
   { id: "view.popout", title: "Pop out view", menu: "View", key: "Ctrl+Shift+V", enabled: hasModel, run: () => { viewPopped.value = !viewPopped.value; } },
   { id: "view.describe", title: "Describe the view", menu: "View", key: "Ctrl+Shift+D", enabled: hasModel,
-    run: () => { modelTab.value = "interface"; void describeView(); } },
+    run: () => { activeDoc.value = "model"; modelTab.value = "interface"; void describeView(); } },
   { id: "view.layoutNetLogo", title: "Layout: NetLogo", menu: "View", enabled: hasModel,
     run: () => { modelTab.value = "interface"; viewPopped.value = false; rightOpen.value = false; bottomOpen.value = true; bottomTab.value = "command"; } },
   { id: "view.layoutCodeRun", title: "Layout: Code and run", menu: "View", enabled: hasModel,
     run: () => { modelTab.value = "code"; viewPopped.value = true; rightOpen.value = true; } },
-  { id: "edit.undo", title: "Undo interface or experiment change", menu: "Edit", key: "Ctrl+Z", textKey: false,
-    enabled: () => editingNonCode() && canUndo.value, run: () => undoInterface(false) },
-  { id: "edit.redo", title: "Redo interface or experiment change", menu: "Edit", key: "Ctrl+Y", textKey: false,
-    enabled: () => editingNonCode() && canRedo.value, run: () => undoInterface(true) },
+  // Outside text fields, Ctrl+Z steps back through every change to the model: code, Info,
+  // interface and experiments (one history, I3). In the code editor or a text field, Ctrl+Z
+  // undoes typing there first.
+  { id: "edit.undo", title: "Undo model change", menu: "Edit", key: "Ctrl+Z", textKey: false,
+    enabled: () => hasModel() && canUndo.value, run: () => undoInterface(false) },
+  { id: "edit.redo", title: "Redo model change", menu: "Edit", key: "Ctrl+Y", textKey: false,
+    enabled: () => hasModel() && canRedo.value, run: () => undoInterface(true) },
+  { id: "edit.redo2", title: "Redo model change", menu: "Edit", key: "Ctrl+Shift+Z", textKey: false,
+    enabled: () => hasModel() && canRedo.value, run: () => undoInterface(true) },
   { id: "edit.toggle", title: "Edit the interface", menu: "Edit", key: "Ctrl+E", enabled: hasModel,
-    run: () => { modelTab.value = "interface"; editMode.value = !editMode.value; } },
+    run: () => { activeDoc.value = "model"; modelTab.value = "interface"; editMode.value = !editMode.value; } },
   { id: "model.apply", title: "Apply code changes", menu: "Model", key: "Ctrl+Shift+Enter", enabled: hasModel, run: () => applyCode() },
   { id: "run.step", title: "Step one tick", menu: "Run", key: "F10", enabled: () => hasModel() && !running.value, run: () => stepModel() },
   { id: "run.pause", title: "Pause", menu: "Run", key: "F6", enabled: () => !!running.value, run: () => stopModel() },

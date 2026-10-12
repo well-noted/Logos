@@ -108,8 +108,8 @@ export const ipc = {
   viewUpdates: (id: number, onTicks: boolean) => invoke<void>("model_view_updates", { id, onTicks }),
   observe: (id: number, reporters: string[]) =>
     invoke<{ ticks: number | null; values: { text: string; ok: boolean }[] }>("model_observe", { id, reporters }),
-  setCode: (id: number, code: string) => invoke<{ dirty: boolean; notApplied: boolean }>("model_set_code", { id, code }),
-  setInfo: (id: number, info: string) => invoke<boolean>("model_set_info", { id, info }),
+  setCode: (id: number, code: string) => invoke<{ dirty: boolean; notApplied: boolean; canUndo: boolean; canRedo: boolean }>("model_set_code", { id, code }),
+  setInfo: (id: number, info: string) => invoke<{ dirty: boolean; canUndo: boolean; canRedo: boolean }>("model_set_info", { id, info }),
   save: (id: number) => invoke<void>("model_save", { id }),
   apply: (id: number) => invoke<ModelView>("model_apply", { id }),
   widgets: (id: number) => invoke<Widget[]>("model_widgets", { id }),
@@ -118,7 +118,7 @@ export const ipc = {
 
 export interface Events {
   engine: EngineStatus;
-  "model-output": { model: number; text: string };
+  "model-output": { model: number; text: string; outputArea?: boolean };
   "model-monitors": { model: number; ticks: number | null; values: { index: number; text: string; error: boolean }[] };
   "model-ticks": { model: number; ticks: number | null };
   "model-run": { model: number; running: boolean; button?: number | null; reason?: string | null; error?: AppError | null };

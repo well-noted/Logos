@@ -18,6 +18,14 @@ const uiLog = (level: string, text: string) => { invoke("ui_log", { level, text 
 window.addEventListener("error", (e) => uiLog("error", `${e.message} at ${e.filename}:${e.lineno}`));
 window.addEventListener("unhandledrejection", (e) => uiLog("error", `unhandled: ${JSON.stringify(e.reason)}`));
 
+// The web view's own menu (Back, Reload, Inspect) means nothing in Logos; text fields keep
+// theirs for copy and paste.
+window.addEventListener("contextmenu", (e) => {
+  const t = e.target as HTMLElement | null;
+  if (t && (t.isContentEditable || ["INPUT", "TEXTAREA"].includes(t.tagName))) return;
+  e.preventDefault();
+});
+
 refreshTheme();
 installShortcuts();
 interceptLinks();

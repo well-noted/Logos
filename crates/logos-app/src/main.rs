@@ -7,6 +7,8 @@ mod data;
 mod engine;
 mod experiments;
 mod git;
+mod history;
+mod language;
 mod lsp;
 mod project;
 mod recovery;
@@ -53,6 +55,8 @@ struct Core {
     settings: Mutex<Settings>,
     engine: Mutex<EngineStatus>,
     sessions: Mutex<Option<Arc<Sessions>>>,
+    /// The primitive table's names, read once (highlighting).
+    language: Mutex<Option<language::LanguageNames>>,
     autosaves: recovery::Autosaves,
     /// Models opened with an autosaved copy the user hasn't restored or discarded yet; their
     /// copies are kept until then.
@@ -122,6 +126,7 @@ impl Core {
     /// Finds NetLogo and starts the run bridge. Called at startup and when the user picks a
     /// different install.
     fn start_engine(&self) {
+        *self.language.lock().unwrap() = None;
         if let Some(old) = self.sessions.lock().unwrap().take() {
             old.shutdown();
         }
@@ -512,15 +517,22 @@ async fn model_set_code(core: CoreState<'_>, id: u64, code: String) -> AppResult
         let s = core.sessions()?;
         let dirty = s.set_code(id, &code)?;
         let changed = s.get(id)?.code_changed_since_apply();
-        Ok(json!({ "dirty": dirty, "notApplied": changed }))
+        let (can_undo, can_redo) = s.history(id)?;
+        Ok(json!({ "dirty": dirty, "notApplied": changed, "canUndo": can_undo, "canRedo": can_redo }))
     })
     .await
 }
 
 #[tauri::command]
-async fn model_set_info(core: CoreState<'_>, id: u64, info: String) -> AppResult<bool> {
+async fn model_set_info(core: CoreState<'_>, id: u64, info: String) -> AppResult<Json> {
     let core = core.inner().clone();
-    blocking(move || core.sessions()?.set_info(id, &info)).await
+    blocking(move || {
+        let s = core.sessions()?;
+        let dirty = s.set_info(id, &info)?;
+        let (can_undo, can_redo) = s.history(id)?;
+        Ok(json!({ "dirty": dirty, "canUndo": can_undo, "canRedo": can_redo }))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -696,6 +708,14 @@ enum WidgetOp {
     Batch {
         ops: Vec<WidgetOp>,
     },
+    /// The whole code section, as one step with other edits (search and replace).
+    Code {
+        text: String,
+    },
+    /// The whole Info text.
+    Info {
+        text: String,
+    },
 }
 
 fn apply_widget_op(n: &mut logos_nlogox::Nlogox, op: WidgetOp) -> Result<(), String> {
@@ -717,6 +737,8 @@ fn apply_widget_op(n: &mut logos_nlogox::Nlogox, op: WidgetOp) -> Result<(), Str
         }
         WidgetOp::Delete { index } => n.delete_widget(index),
         WidgetOp::World { index, world } => n.set_world(index, &world),
+        WidgetOp::Code { text } => return n.set_code(&text).map_err(|e| e.to_string()),
+        WidgetOp::Info { text } => return n.set_info(&text).map_err(|e| e.to_string()),
         WidgetOp::Batch { ops } => {
             for op in ops {
                 apply_widget_op(n, op)?;
@@ -746,6 +768,136 @@ async fn model_edit_widget(
 async fn git_status(core: CoreState<'_>, id: u64) -> AppResult<Option<git::GitStatus>> {
     let path = model_path(&core, id)?;
     blocking(move || Ok(path.parent().and_then(git::status))).await
+}
+
+/// NetLogo's names by class, for highlighting.
+#[tauri::command]
+async fn language_names(core: CoreState<'_>) -> AppResult<language::LanguageNames> {
+    let core = core.inner().clone();
+    blocking(move || {
+        if let Some(n) = core.language.lock().unwrap().clone() {
+            return Ok(n);
+        }
+        let n = language::load(core.sessions()?.bridge()).map_err(AppError::new)?;
+        *core.language.lock().unwrap() = Some(n.clone());
+        Ok(n)
+    })
+    .await
+}
+
+/// A font family installed on the computer.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FontFamily {
+    family: String,
+    monospace: bool,
+}
+
+/// The font families installed on the computer, sorted, for the font settings.
+#[tauri::command]
+async fn system_fonts() -> AppResult<Vec<FontFamily>> {
+    blocking(|| {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let mut out: std::collections::BTreeMap<String, bool> = Default::default();
+        for face in db.faces() {
+            if let Some((name, _)) = face.families.first() {
+                // A family is monospaced when every face of it is.
+                let mono = out.get(name).copied().unwrap_or(true) && face.monospaced;
+                out.insert(name.clone(), mono);
+            }
+        }
+        Ok(out
+            .into_iter()
+            .filter(|(f, _)| !f.starts_with('.'))
+            .map(|(family, monospace)| FontFamily { family, monospace })
+            .collect())
+    })
+    .await
+}
+
+/// The code of a model file, for comparing: `.nlogox`, or the code section of a legacy
+/// `.nlogo` file.
+fn code_of_file_text(path: &Path, text: &str) -> AppResult<String> {
+    let legacy = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("nlogo") || e.eq_ignore_ascii_case("nlogo3d"));
+    if legacy {
+        return Ok(text
+            .split("@#$#@#$#@")
+            .next()
+            .unwrap_or_default()
+            .to_string());
+    }
+    let n = logos_nlogox::Nlogox::parse(text.to_string())
+        .map_err(|e| AppError::new(format!("{}: {e}", path.display())))?;
+    n.code().map_err(|e| AppError::new(e.to_string()))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum CompareSource {
+    /// The model file as saved on disk.
+    Saved,
+    /// The model file as committed at git HEAD.
+    Head,
+    /// Another model file.
+    File { path: PathBuf },
+}
+
+#[derive(Serialize)]
+struct CompareText {
+    label: String,
+    code: String,
+}
+
+/// Code to compare the open model's code with (the Code tab's Compare).
+#[tauri::command]
+async fn model_compare_source(
+    core: CoreState<'_>,
+    id: u64,
+    source: CompareSource,
+) -> AppResult<CompareText> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let path = model_path(&core, id)?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match source {
+            CompareSource::Saved => {
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| AppError::new(format!("{}: {e}", path.display())))?;
+                Ok(CompareText {
+                    label: format!("{name} (saved)"),
+                    code: code_of_file_text(&path, &text)?,
+                })
+            }
+            CompareSource::Head => {
+                let dir = path.parent().unwrap_or(Path::new("."));
+                let text = git::file_at_head(dir, &name).ok_or_else(|| {
+                    AppError::new("The model isn't committed in a git repository.")
+                })?;
+                Ok(CompareText {
+                    label: format!("{name} (git HEAD)"),
+                    code: code_of_file_text(&path, &text)?,
+                })
+            }
+            CompareSource::File { path: other } => {
+                let text = std::fs::read_to_string(&other)
+                    .map_err(|e| AppError::new(format!("{}: {e}", other.display())))?;
+                Ok(CompareText {
+                    label: other
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    code: code_of_file_text(&other, &text)?,
+                })
+            }
+        }
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1156,6 +1308,7 @@ fn main() {
                     ..EngineStatus::default()
                 }),
                 sessions: Mutex::new(None),
+                language: Mutex::new(None),
                 lsp: Mutex::new(None),
                 passphrase: Mutex::new(None),
                 studies: Arc::new(experiments::Studies::default()),
@@ -1205,6 +1358,9 @@ fn main() {
             model_edit_widget,
             model_undo,
             git_status,
+            model_compare_source,
+            system_fonts,
+            language_names,
             model_recovery,
             model_resolve_recovery,
             model_reload,

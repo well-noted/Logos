@@ -2,21 +2,26 @@
 // sheet with NetLogo's fields, and undo and redo. Every change is a span edit in the host
 // (D-19), so everything else in the file stays as it was.
 
-import { signal } from "@preact/signals";
+import { computed, signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
 import { invoke } from "@tauri-apps/api/core";
 import type { Widget } from "./ipc";
 import { errorText } from "./ipc";
 import { Icon } from "./icons";
+import { type MenuItem, showContextMenu } from "./menu";
+import { snap } from "./snap";
 import { refreshExperiments } from "./experiments";
-import { addActivity, dirty, model, notApplied, rightOpen, showToast } from "./state";
+import { addActivity, dirty, history, model, notApplied, rightOpen, showToast } from "./state";
+import { replaceOpenCode } from "./code";
 
 export const editMode = signal(false);
 export const selected = signal<number | null>(null);
-export const canUndo = signal(false);
-export const canRedo = signal(false);
+export const canUndo = computed(() => history.value.canUndo);
+export const canRedo = computed(() => history.value.canRedo);
 
-export interface WidgetEdit { widgets: Widget[]; dirty: boolean; globalsChanged: boolean; canUndo: boolean; canRedo: boolean }
+export interface WidgetEdit {
+  widgets: Widget[]; dirty: boolean; globalsChanged: boolean; canUndo: boolean; canRedo: boolean; code: string; info: string;
+}
 
 export type Op =
   | { op: "bounds"; index: number; x: number; y: number; width: number; height: number }
@@ -26,20 +31,23 @@ export type Op =
   | { op: "delete"; index: number }
   | { op: "world"; index: number; world: World }
   | { op: "part"; index: number; part: string; text: string }
-  | { op: "batch"; ops: Op[] };
+  | { op: "batch"; ops: Op[] }
+  | { op: "code"; text: string }
+  | { op: "info"; text: string };
 
 export interface World { minPxcor: number; maxPxcor: number; minPycor: number; maxPycor: number; patchSize: number }
 
 export function applyResult(r: WidgetEdit) {
   const m = model.value;
   if (!m) return;
-  model.value = { ...m, widgets: r.widgets };
+  model.value = { ...m, widgets: r.widgets, code: r.code, info: r.info };
+  // The code editor follows when an undo or a replace changed the code.
+  if (r.code !== m.code) { replaceOpenCode(r.code); notApplied.value = true; }
   dirty.value = r.dirty;
-  canUndo.value = r.canUndo;
-  canRedo.value = r.canRedo;
+  history.value = { canUndo: r.canUndo, canRedo: r.canRedo };
   if (r.globalsChanged) {
     notApplied.value = true;
-    showToast("The widgets' variables changed. Apply (in the Code tab) to use them in the model.");
+    showToast("The widgets' variables changed. Apply (on the Interface toolbar or in the Code tab) to use them in the model.");
   }
 }
 
@@ -81,18 +89,57 @@ function freshName(kind: string): string {
   return name;
 }
 
+/** A widget kind chosen from Add, waiting for a click on the interface to place it. */
+export const placing = signal<string | null>(null);
+/** Lines a Shift-drag snapped to, drawn while dragging. */
+export const guides = signal<{ x: number[]; y: number[] }>({ x: [], y: [] });
+
+/** Adds a widget of `kind` with its top left corner at (x, y), selected for editing. */
+export async function addAt(kind: string, x: number, y: number) {
+  placing.value = null;
+  editMode.value = true;
+  const ok = await editWidget({ op: "add", kind, x: Math.max(0, Math.round(x)), y: Math.max(0, Math.round(y)), name: freshName(kind) }, `Added a ${kind}`);
+  if (!ok) return;
+  const n = model.value?.widgets.length ?? 0;
+  selected.value = n - 1;
+  rightOpen.value = true;
+}
+
+/** Starts placing a widget: the next click on the interface puts it there. */
+export function startPlacing(kind: string) {
+  editMode.value = true;
+  placing.value = kind;
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key !== "Escape") return;
+    window.removeEventListener("keydown", onKey, true);
+    if (placing.value) { placing.value = null; showToast("Not added."); }
+  };
+  window.addEventListener("keydown", onKey, true);
+  const label = KINDS.find(([k]) => k === kind)?.[1].toLowerCase() ?? kind;
+  showToast(`Click where the ${label} goes. Esc cancels.`);
+}
+
+/** The interface's right-click menu: add at the spot, or edit and delete the widget there. */
+export function interfaceMenu(e: MouseEvent, x: number, y: number, w: Widget | undefined) {
+  const items: MenuItem[] = [];
+  if (w) {
+    items.push(
+      { label: `Edit ${w.element}…`, run: () => { editMode.value = true; selected.value = w.index; rightOpen.value = true; } },
+      { label: `Delete ${w.element}`, disabled: w.data.kind === "view", run: () => { selected.value = w.index; void deleteSelected(); } },
+      "separator",
+    );
+  }
+  for (const [k, label] of KINDS) items.push({ label: `Add ${label.toLowerCase()} here`, run: () => void addAt(k, x, y) });
+  if (editMode.value) items.push("separator", { label: "Done editing", run: () => { editMode.value = false; selected.value = null; } });
+  showContextMenu(e, w ? `${w.element} menu` : "Interface menu", items);
+}
+
 export function AddMenu() {
   const [open, setOpen] = useState(false);
-  const add = async (kind: string) => {
+  const add = (kind: string) => {
     setOpen(false);
-    const m = model.value;
-    if (!m) return;
-    editMode.value = true;
-    const bottom = Math.max(10, ...m.widgets.map((w) => w.y + w.height + 10));
-    await editWidget({ op: "add", kind, x: 10, y: bottom, name: freshName(kind) }, `Added a ${kind}`);
-    const n = model.value?.widgets.length ?? 0;
-    selected.value = n - 1;
-    rightOpen.value = true;
+    if (!model.value) return;
+    startPlacing(kind);
   };
   return (
     <div class="menu">
@@ -125,14 +172,25 @@ export function EditFrame({ w }: { w: Widget }) {
     (target.closest(".edit-frame") as HTMLElement | null)?.focus({ preventScroll: true });
     target.setPointerCapture(e.pointerId);
     let last = { dx: 0, dy: 0, dw: 0, dh: 0 };
+    const others = (model.value?.widgets ?? []).filter((o) => o.index !== w.index);
     const move = (ev: PointerEvent) => {
       const dx = Math.round(ev.clientX - sx), dy = Math.round(ev.clientY - sy);
       last = resize ? { dx: 0, dy: 0, dw: dx, dh: dy } : { dx, dy, dw: 0, dh: 0 };
+      if (ev.shiftKey) {
+        // Shift: jump into line with the nearest edges of the other widgets.
+        const r = { x: w.x + last.dx, y: w.y + last.dy, width: w.width + last.dw, height: w.height + last.dh };
+        const sn = snap(r, others, resize);
+        last = { dx: sn.x - w.x, dy: sn.y - w.y, dw: sn.width - w.width, dh: sn.height - w.height };
+        guides.value = { x: sn.guidesX, y: sn.guidesY };
+      } else if (guides.value.x.length || guides.value.y.length) {
+        guides.value = { x: [], y: [] };
+      }
       setDrag(last);
     };
     const up = () => {
       target.removeEventListener("pointermove", move);
       target.removeEventListener("pointerup", up);
+      guides.value = { x: [], y: [] };
       setDrag(null);
       if (last.dx || last.dy || last.dw || last.dh) {
         editWidget({

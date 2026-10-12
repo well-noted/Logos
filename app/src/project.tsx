@@ -1,6 +1,7 @@
 // Projects and secrets: the Files panel, the project setup review (design 3.9) and the
 // Secrets document (design 3.7).
 
+import { signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -113,6 +114,7 @@ function SecretNames({ label, names, onChange }: { label: string; names: string[
         {names.length === 0 && <span class="muted">none</span>}
         {names.map((n) => (
           <span class="chip mono" role="listitem">{n}
+            <button class="link-btn chip-set" onClick={() => { secretToSet.value = n; openDoc({ id: "secrets", kind: "secrets" }); }}>set value</button>
             <button class="icon-btn" aria-label={`Remove ${n}`} onClick={() => onChange(names.filter((x) => x !== n))}><Icon name="close" /></button>
           </span>
         ))}
@@ -326,11 +328,18 @@ function SetupReview() {
 interface SecretRow { name: string; required: boolean; declared: boolean; source?: string | null; masked?: string | null }
 interface SecretsView { store: string; needsPassphrase: boolean; rows: SecretRow[]; projectId?: string | null }
 
+/** A secret the Secrets document should open for setting its value. */
+export const secretToSet = signal<string | null>(null);
+
 export function SecretsDoc() {
   const m = model.value!;
   const [v, setV] = useState<SecretsView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ name: string; value: string; scope: string; isNew: boolean } | null>(null);
+  useEffect(() => {
+    const n = secretToSet.value;
+    if (n && v) { setEditing({ name: n, value: "", scope: "user", isNew: false }); secretToSet.value = null; }
+  }, [secretToSet.value, v]);
   const [shown, setShown] = useState<{ name: string; value: string; until: number } | null>(null);
   const [copied, setCopied] = useState<{ name: string; until: number } | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -414,12 +423,28 @@ export function SecretsDoc() {
               <td>{r.declared ? (r.required ? "required" : "optional") : <span class="muted">not declared</span>}</td>
               <td>{r.source ? <span class="ok">set ({r.source})</span> : <span class={r.required ? "err" : "muted"}><strong>{r.required ? "✕ missing" : "missing"}</strong></span>}</td>
               <td class="mono" aria-live="polite">
-                {shown?.name === r.name ? <span>{shown.value} <span class="muted">(hides in {secs(shown.until)} s)</span></span> : r.masked ?? ""}
-                {copied?.name === r.name && <span class="muted"> copied; clipboard clears in {secs(copied.until)} s</span>}
+                {editing && !editing.isNew && editing.name === r.name ? (
+                  <form class="secret-inline" onSubmit={(e) => { e.preventDefault(); save(); }}>
+                    <input type="password" autoComplete="off" aria-label={`New value of ${r.name}`} placeholder="new value" value={editing.value} autoFocus
+                      onInput={(e) => setEditing({ ...editing, value: (e.target as HTMLInputElement).value })}
+                      onKeyDown={(e) => { if (e.key === "Escape") setEditing(null); }} />
+                    <select aria-label="Keep for" value={editing.scope} onChange={(e) => setEditing({ ...editing, scope: (e.target as HTMLSelectElement).value })}>
+                      <option value="user">all my projects</option>
+                      <option value="project">this project only</option>
+                    </select>
+                    <button class="btn small primary" type="submit" disabled={!editing.value}>Save</button>
+                    <button class="btn small" type="button" onClick={() => setEditing(null)}>Cancel</button>
+                  </form>
+                ) : (
+                  <>
+                    {shown?.name === r.name ? <span>{shown.value} <span class="muted">(hides in {secs(shown.until)} s)</span></span> : r.masked ?? ""}
+                    {copied?.name === r.name && <span class="muted"> copied; clipboard clears in {secs(copied.until)} s</span>}
+                  </>
+                )}
               </td>
               <td>
                 <div class="actions">
-                  <button class="btn small" onClick={() => setEditing({ name: r.name, value: "", scope: r.source === "project" ? "project" : "user", isNew: false })}>{r.source ? "Change" : "Set"}</button>
+                  <button class={`btn small${r.source ? "" : " primary"}`} onClick={() => setEditing({ name: r.name, value: "", scope: r.source === "project" ? "project" : "user", isNew: false })}>{r.source ? "Change value" : "Set value"}</button>
                   {r.source && r.source !== "environment" && <button class="btn small" onClick={() => unmask(r)}>Unmask</button>}
                   {r.source && r.source !== "environment" && <button class="btn small" onClick={() => copy(r)}>Copy</button>}
                   {r.source && r.source !== "environment" && <button class="btn small" onClick={() => remove(r)}>Delete</button>}
@@ -432,7 +457,7 @@ export function SecretsDoc() {
       <div class="actions" style="margin-top: 8px">
         <button class="btn small" onClick={() => setEditing({ name: "", value: "", scope: "user", isNew: true })}><Icon name="add" /> Add a secret</button>
       </div>
-      {editing && (
+      {editing && editing.isNew && (
         <form class="card" style="margin-top: 12px" onSubmit={(e) => { e.preventDefault(); save(); }}>
           <h3 style="margin-top: 0">{editing.isNew ? "Add a secret" : `Set ${editing.name}`}</h3>
           <div class="actions">

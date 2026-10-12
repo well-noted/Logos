@@ -295,7 +295,7 @@ pre.log { max-height: 160px; overflow: auto; font-size: 11px; background: var(--
 
 .toast { position: fixed; bottom: 36px; left: 50%; transform: translateX(-50%); background: var(--status-bg); color: var(--status-text); padding: 8px 14px; border-radius: 4px; z-index: 90; max-width: 70vw; }
 .popout { position: fixed; right: 20px; bottom: 210px; z-index: 40; background: var(--bg-panel); border: 1px solid var(--control-border); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.25); display: flex; flex-direction: column; resize: both; overflow: hidden; width: 420px; height: 460px; min-width: 200px; min-height: 160px; }
-.popout header { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; border-bottom: 1px solid var(--border); font-size: 12px; cursor: move; }
+.popout header { user-select: none; touch-action: none; display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; border-bottom: 1px solid var(--border); font-size: 12px; cursor: move; }
 .popout canvas { flex: 1; min-height: 0; width: 100%; background: #000; image-rendering: pixelated; object-fit: contain; }
 
 /* ---- document pages: project, secrets, experiments --------------------------------------- */
@@ -387,3 +387,91 @@ pre.log { max-height: 160px; overflow: auto; font-size: 11px; background: var(--
 .chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 24px; }
 .chip { display: inline-flex; align-items: center; gap: 2px; padding: 0 2px 0 8px; border: 1px solid var(--control-border); border-radius: 12px; font-size: 12px; }
 .chip .icon-btn { width: 20px; height: 20px; }
+
+/* Command Center */
+.cc-out .cc-line { white-space: pre-wrap; }
+.cc-out .cc-error { color: var(--error); }
+.cc-editor { flex: 1; min-width: 0; border: 1px solid var(--control-border); border-radius: 4px; background: var(--bg-input);
+  font-family: var(--code-font); padding: 0 6px; display: flex; align-items: center; }
+.cc-editor.disabled { opacity: 0.6; }
+.cc-editor .cm-editor { flex: 1; background: transparent; color: var(--code-text); }
+.cc-editor .cm-editor.cm-focused { outline: none; }
+.cc-editor:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
+.cc-editor .cm-content { padding: 4px 0; caret-color: var(--code-text); }
+.cc-editor .cm-placeholder { color: var(--text-muted); }
+.syn-keyword { color: var(--syn-keyword); font-weight: 600; }
+.syn-command { color: var(--syn-command); }
+.syn-reporter { color: var(--syn-reporter); }
+.syn-procedure, .syn-definition { color: var(--syn-procedure); }
+.syn-variable, .syn-breed { color: var(--syn-variable); }
+.syn-number { color: var(--syn-number); }
+.syn-string { color: var(--syn-string); }
+.syn-comment { color: var(--syn-comment); font-style: italic; }
+.syn-bracket { color: var(--syn-bracket); }
+
+/* Font pickers */
+.font-pickers { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.font-picker { display: flex; flex-direction: column; gap: 4px; position: relative; }
+.font-picker .font-current { justify-content: flex-start; font-size: 14px; }
+.font-pop { position: static; background: var(--bg-panel); border: 1px solid var(--control-border);
+  border-radius: 4px; padding: 6px; box-shadow: 0 6px 18px rgba(0,0,0,0.25); }
+.font-pop input { width: 100%; box-sizing: border-box; margin-bottom: 4px; }
+.font-pop ul { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow: auto; }
+.font-pop li button { display: flex; gap: 10px; align-items: baseline; width: 100%; text-align: left; border: 0; background: transparent;
+  color: var(--text); padding: 4px 6px; font-size: 14px; cursor: pointer; }
+.font-pop li button:hover, .font-pop li[aria-selected="true"] button { background: var(--bg-hover); }
+.font-pop .sample { color: var(--text-muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.font-pop .tag { margin-left: auto; font-family: var(--font); font-size: 11px; color: var(--text-muted); }
+
+.settings.confirm { width: min(520px, 94vw); }
+
+.secret-inline { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.secret-inline input { min-width: 140px; }
+.chip .chip-set { font-family: var(--font); font-size: 11px; margin-left: 6px; color: var(--text-muted); }
+
+/* Outline */
+.outline-bar { display: flex; gap: 4px; padding: 0 6px 6px; }
+.outline-bar input { flex: 1; min-width: 0; }
+.outline-group summary { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); padding: 6px 6px 2px; cursor: pointer; }
+
+/* Documents side by side */
+.doc-single, .doc-split { flex: 1; min-height: 0; display: flex; }
+.doc-pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.doc-split .doc-pane + .doc-pane { border-left: 2px solid var(--border); }
+.doc-pane .side-head { display: flex; justify-content: space-between; align-items: center; padding: 2px 8px; font-size: 12px;
+  color: var(--text-muted); border-bottom: 1px solid var(--border); background: var(--bg-side); }
+.doc-tab.side { box-shadow: inset 0 -2px 0 var(--text-muted); }
+.diff-host { flex: 1; min-height: 0; overflow: auto; background: var(--code-bg); font-family: var(--code-font); font-size: var(--code-font-size); }
+.diff-host .cm-mergeView { height: auto; }
+.diff-host .cm-changedLine { background-color: color-mix(in srgb, var(--warning) 14%, transparent) !important; }
+.diff-host .cm-deletedChunk { background-color: color-mix(in srgb, var(--error) 14%, transparent) !important; }
+.diff-host .cm-changedText { background: color-mix(in srgb, var(--warning) 40%, transparent) !important; }
+.diff-host .cm-collapsedLines { background: var(--bg-side); color: var(--text-muted); }
+
+/* Context menus */
+.context-menu { position: fixed; z-index: 100; list-style: none; margin: 0; padding: 4px 0; min-width: 200px; background: var(--bg-panel);
+  border: 1px solid var(--control-border); border-radius: 4px; box-shadow: 0 6px 18px rgba(0,0,0,0.25); }
+.context-menu button { display: block; width: 100%; text-align: left; border: 0; background: transparent; color: var(--text); padding: 5px 14px; font: inherit; font-size: 13px; cursor: pointer; }
+.context-menu button:hover, .context-menu button:focus { background: var(--bg-hover); outline: none; }
+.context-menu button:disabled { color: var(--text-muted); cursor: default; }
+.context-menu .sep { height: 1px; background: var(--border); margin: 4px 0; }
+
+/* Interface: placing and snapping */
+.interface.placing, .interface.placing * { cursor: crosshair !important; }
+.snap-guide { position: absolute; pointer-events: none; z-index: 5; }
+.snap-guide.v { top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--focus); }
+.snap-guide.h { left: 0; right: 0; height: 0; border-top: 1px dashed var(--focus); }
+
+/* CodeMirror panels and dialogs (rename, search, messages) follow the theme. */
+.cm-editor .cm-panels { background-color: var(--bg-panel) !important; color: var(--text) !important; border-color: var(--border) !important; }
+.cm-editor .cm-panel, .cm-editor .cm-panel label { color: var(--text) !important; }
+.cm-editor .cm-textfield, .cm-editor .cm-panel input {
+  background: var(--bg-input) !important; color: var(--text) !important; border: 1px solid var(--control-border) !important; }
+.cm-editor .cm-button, .cm-editor .cm-panel button {
+  background: var(--button-bg) !important; color: var(--button-text) !important; border: 1px solid var(--control-border) !important; background-image: none !important; }
+.cm-editor .cm-tooltip, .cm-editor .cm-tooltip-autocomplete > ul > li { color: var(--text); }
+.cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] { background: var(--bg-selected) !important; color: var(--text) !important; }
+.cm-editor .cm-lsp-message { color: var(--text); }
+.cm-editor .cm-lsp-rename-panel, .cm-editor .cm-lsp-rename-panel label { font-size: 13px !important; font-family: var(--font); }
+.cm-editor .cm-lsp-rename-panel input { font-family: var(--code-font); font-size: var(--code-font-size); padding: 2px 6px; min-width: 220px; }
+.cm-editor .cm-lsp-rename-panel button { font-size: 13px !important; }
