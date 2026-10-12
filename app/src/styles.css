@@ -368,3 +368,10 @@ pre.log { max-height: 160px; overflow: auto; font-size: 11px; background: var(--
 .experiment-editor textarea, .experiment-editor .form-grid input[type="text"] { width: 100%; min-width: 0; box-sizing: border-box; }
 .experiment-editor .stepped { display: flex; gap: 10px; flex-wrap: wrap; }
 .experiment-editor .stepped label { font-size: 12px; color: var(--text-muted); display: flex; gap: 4px; align-items: center; }
+
+/* View: keyboard cursor and description (X1, X2) */
+.w-view .view-area { position: relative; flex: 1; min-height: 0; display: flex; }
+.w-view .view-cursor { position: absolute; outline: 2px solid #ffeb3b; box-shadow: 0 0 0 3px #000; pointer-events: none; }
+.w-view .view-description { position: absolute; left: 4px; right: 4px; bottom: 4px; background: var(--bg-panel); color: var(--text);
+  border: 1px solid var(--control-border); border-radius: 4px; padding: 6px 28px 6px 8px; font-size: 12px; z-index: 2; }
+.w-view .view-description .icon-btn { position: absolute; top: 2px; right: 2px; }
