@@ -365,6 +365,20 @@ pub struct ArgType {
     pub mask: u32,
 }
 
+/// Params of `workspace.check`.
+#[derive(Debug, Serialize)]
+pub struct CheckParams<'a> {
+    pub workspace: WorkspaceId,
+    pub source: &'a str,
+}
+
+/// Result of `workspace.check`: NetLogo's compile errors for the code (at most one; NetLogo
+/// stops at the first). Spans are in UTF-16 code units.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CheckResult {
+    pub errors: Vec<ModelError>,
+}
+
 /// Params of `workspace.references`.
 #[derive(Debug, Serialize)]
 pub struct ReferencesParams<'a> {
