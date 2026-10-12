@@ -17,12 +17,15 @@ export const canRedo = signal(false);
 
 interface WidgetEdit { widgets: Widget[]; dirty: boolean; globalsChanged: boolean; canUndo: boolean; canRedo: boolean }
 
-type Op =
+export type Op =
   | { op: "bounds"; index: number; x: number; y: number; width: number; height: number }
   | { op: "attr"; index: number; name: string; value: string }
   | { op: "text"; index: number; text: string }
   | { op: "add"; kind: string; x: number; y: number; name: string }
-  | { op: "delete"; index: number };
+  | { op: "delete"; index: number }
+  | { op: "world"; index: number; world: World };
+
+export interface World { minPxcor: number; maxPxcor: number; minPycor: number; maxPycor: number; patchSize: number }
 
 function applyResult(r: WidgetEdit) {
   const m = model.value;
@@ -37,14 +40,16 @@ function applyResult(r: WidgetEdit) {
   }
 }
 
-export async function editWidget(op: Op, what: string) {
+export async function editWidget(op: Op, what: string): Promise<boolean> {
   const m = model.value;
-  if (!m) return;
+  if (!m) return false;
   try {
     applyResult(await invoke<WidgetEdit>("model_edit_widget", { id: m.id, op }));
     addActivity(what);
+    return true;
   } catch (e) {
     showToast(`Can't change the widget: ${errorText(e)}`);
+    return false;
   }
 }
 
@@ -110,6 +115,8 @@ export function EditFrame({ w }: { w: Widget }) {
     rightOpen.value = true;
     const sx = e.clientX, sy = e.clientY;
     const target = e.currentTarget as HTMLElement;
+    // preventDefault stops the browser from focusing the frame; focus it so arrow keys work.
+    (target.closest(".edit-frame") as HTMLElement | null)?.focus({ preventScroll: true });
     target.setPointerCapture(e.pointerId);
     let last = { dx: 0, dy: 0, dw: 0, dh: 0 };
     const move = (ev: PointerEvent) => {
@@ -169,7 +176,7 @@ export async function deleteSelected() {
 
 // ---- the property sheet ----------------------------------------------------------------
 
-type Field = { name: string; label: string; kind?: "text" | "number" | "bool" | "area" | "select"; options?: string[]; text?: boolean };
+type Field = { name: string; label: string; kind?: "text" | "number" | "bool" | "area" | "select"; options?: string[]; text?: boolean; float?: boolean };
 
 function fieldsFor(w: Widget): Field[] {
   const common: Field[] = [{ name: "display", label: "Label" }];
@@ -187,12 +194,15 @@ function fieldsFor(w: Widget): Field[] {
     case "monitor": return [{ name: "source", label: "Reporter", kind: "area", text: true }, ...common,
       { name: "precision", label: "Decimal places", kind: "number" }, { name: "units", label: "Units" }, { name: "fontSize", label: "Font size", kind: "number" }];
     case "plot": return [...common, { name: "xAxis", label: "X axis label" }, { name: "yAxis", label: "Y axis label" },
-      { name: "xMin", label: "X min", kind: "number" }, { name: "xMax", label: "X max", kind: "number" },
-      { name: "yMin", label: "Y min", kind: "number" }, { name: "yMax", label: "Y max", kind: "number" },
+      { name: "xMin", label: "X min", kind: "number", float: true }, { name: "xMax", label: "X max", kind: "number", float: true },
+      { name: "yMin", label: "Y min", kind: "number", float: true }, { name: "yMax", label: "Y max", kind: "number", float: true },
       { name: "autoPlotX", label: "Auto scale X", kind: "bool" }, { name: "autoPlotY", label: "Auto scale Y", kind: "bool" }, { name: "legend", label: "Show legend", kind: "bool" }];
     case "note": return [{ name: "source", label: "Text", kind: "area", text: true }, { name: "fontSize", label: "Font size", kind: "number" }, { name: "markdown", label: "Markdown", kind: "bool" }];
     case "output": return [{ name: "fontSize", label: "Font size", kind: "number" }];
-    case "view": return [];
+    case "view": return [{ name: "wrappingAllowedX", label: "Wrap horizontally", kind: "bool" },
+      { name: "wrappingAllowedY", label: "Wrap vertically", kind: "bool" },
+      { name: "showTickCounter", label: "Show tick counter", kind: "bool" }, { name: "tickCounterLabel", label: "Tick counter label" },
+      { name: "fontSize", label: "Label font size", kind: "number" }, { name: "frameRate", label: "Frame rate", kind: "number", float: true }];
     default: return [];
   }
 }
@@ -200,7 +210,7 @@ function fieldsFor(w: Widget): Field[] {
 function currentValue(w: Widget, f: Field): string {
   const d = w.data as unknown as Record<string, unknown>;
   if (f.text) return String((d.source ?? d.text ?? "") as string);
-  const map: Record<string, string> = { default: "value", kind: "agentKind", type: "inputType" };
+  const map: Record<string, string> = { default: "value", kind: "agentKind", type: "inputType", wrappingAllowedX: "wrapX", wrappingAllowedY: "wrapY" };
   if (f.name === "display") return w.display ?? "";
   if (f.name === "direction") return d.vertical ? "Vertical" : "Horizontal";
   const v = d[map[f.name] ?? f.name];
@@ -216,7 +226,7 @@ export function PropertySheet() {
   return (
     <section class="inspector" aria-label={`Properties of the ${w.element}`}>
       <strong style="text-transform: capitalize">{w.element}</strong>
-      {w.data.kind === "view" && <p class="empty-note" style="padding:0">World size, patch size and wrapping are edited in Settings (comes with world settings, step 12). Move or resize the view here.</p>}
+      {w.data.kind === "view" && <WorldSettings w={w} />}
       {w.data.kind === "chooser" && <p class="empty-note" style="padding:0">Editing the choices comes with the next editing step.</p>}
       <div class="form-grid" style="grid-template-columns: 110px 1fr">
         {fields.map((f) => <PropField w={w} f={f} />)}
@@ -248,7 +258,7 @@ function PropField({ w, f }: { w: Widget; f: Field }) {
     } else if (f.text) {
       editWidget({ op: "text", index: w.index, text: value }, `Changed the ${f.label.toLowerCase()} of a ${w.element}`);
     } else {
-      const val = f.name === "default" && /^-?\d+$/.test(value.trim()) ? `${value.trim()}.0` : value;
+      const val = (f.name === "default" || f.float) && /^-?\d+$/.test(value.trim()) ? `${value.trim()}.0` : value;
       editWidget({ op: "attr", index: w.index, name: f.name, value: val }, `Changed ${f.label.toLowerCase()} of a ${w.element}`);
     }
   };
@@ -270,4 +280,64 @@ function PropField({ w, f }: { w: Widget; f: Field }) {
       )}
     </>
   );
+}
+
+// ---- world settings ------------------------------------------------------------------
+
+/** World size and patch size (NetLogo's Model Settings), on the view's property sheet.
+ * They are written together, so the view's size follows them; the running world changes
+ * on Apply. */
+function WorldSettings({ w }: { w: Widget }) {
+  if (w.data.kind !== "view") return null;
+  const d = w.data;
+  const initial = { minPxcor: d.minPxcor, maxPxcor: d.maxPxcor, minPycor: d.minPycor, maxPycor: d.maxPycor, patchSize: d.patchSize };
+  const key = JSON.stringify(initial);
+  const [draft, setDraft] = useState<Record<keyof World, string>>(() => strings(initial));
+  useEffect(() => setDraft(strings(initial)), [key]);
+  const nums = Object.fromEntries(Object.entries(draft).map(([k, v]) => [k, Number(v)])) as unknown as World;
+  const problem = !Object.values(nums).every(Number.isFinite) ? "Every field needs a number."
+    : !["minPxcor", "maxPxcor", "minPycor", "maxPycor"].every((k) => Number.isInteger(nums[k as keyof World])) ? "Coordinates are whole numbers."
+    : nums.minPxcor > 0 || nums.maxPxcor < 0 || nums.minPycor > 0 || nums.maxPycor < 0 ? "The world must contain the origin (0, 0)."
+    : nums.patchSize <= 0 ? "The patch size must be more than 0." : null;
+  const changed = JSON.stringify(nums) !== key;
+  const apply = async () => {
+    if (problem || !changed) return;
+    if (await editWidget({ op: "world", index: w.index, world: nums }, "Changed the world size")) {
+      notApplied.value = true;
+      showToast("The world size changes in the running model on Apply.");
+    }
+  };
+  const field = (k: keyof World, label: string) => (
+    <>
+      <label for={`world-${k}`}>{label}</label>
+      <input id={`world-${k}`} type="text" class="mono" value={draft[k]}
+        onInput={(e) => setDraft({ ...draft, [k]: (e.target as HTMLInputElement).value })}
+        onKeyDown={(e) => { if (e.key === "Enter") apply(); }} />
+    </>
+  );
+  const width = Number.isFinite(nums.maxPxcor - nums.minPxcor) ? nums.maxPxcor - nums.minPxcor + 1 : 0;
+  const height = Number.isFinite(nums.maxPycor - nums.minPycor) ? nums.maxPycor - nums.minPycor + 1 : 0;
+  return (
+    <fieldset class="world">
+      <legend>World</legend>
+      <div class="form-grid" style="grid-template-columns: 110px 1fr">
+        {field("minPxcor", "min-pxcor")}
+        {field("maxPxcor", "max-pxcor")}
+        {field("minPycor", "min-pycor")}
+        {field("maxPycor", "max-pycor")}
+        {field("patchSize", "Patch size")}
+      </div>
+      <p class="empty-note" style="padding: 2px 0" role="status">
+        {problem ?? `${width} × ${height} patches, view ${Math.round(width * nums.patchSize)} × ${Math.round(height * nums.patchSize)} pixels`}
+      </p>
+      <div class="actions">
+        <button class="btn small" disabled={!!problem || !changed} onClick={apply}>Set world size</button>
+        {changed && <button class="btn small" onClick={() => setDraft(strings(initial))}>Reset</button>}
+      </div>
+    </fieldset>
+  );
+}
+
+function strings(w: World): Record<keyof World, string> {
+  return Object.fromEntries(Object.entries(w).map(([k, v]) => [k, String(v)])) as Record<keyof World, string>;
 }

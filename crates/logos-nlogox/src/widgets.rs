@@ -485,6 +485,8 @@ pub enum WidgetEditError {
     },
     #[error("choice {choice} is out of range for widget {index}")]
     NoSuchChoice { index: usize, choice: usize },
+    #[error("the world must contain the origin and patches must have a positive size")]
+    InvalidWorld,
     #[error(transparent)]
     Edit(#[from] EditError),
 }
@@ -672,6 +674,74 @@ impl Nlogox {
         self.set_text(&path, text)?;
         Ok(())
     }
+
+    /// Sets the world's size and patch size on the view widget at `index`, and resizes the
+    /// view to match. The view's width and height keep the difference they had from the
+    /// world's size in pixels (its frame), so a model's own frame is kept as it is.
+    pub fn set_world(&mut self, index: usize, world: &World) -> Result<(), WidgetEditError> {
+        let w = self
+            .typed_widget(index)
+            .ok_or(WidgetEditError::NoSuchWidget(index))?;
+        let WidgetData::View {
+            min_pxcor,
+            max_pxcor,
+            min_pycor,
+            max_pycor,
+            patch_size,
+            ..
+        } = w.data
+        else {
+            return Err(WidgetEditError::WrongKind {
+                index,
+                element: w.element.clone(),
+                what: "world",
+            });
+        };
+        if world.min_pxcor > 0
+            || world.max_pxcor < 0
+            || world.min_pycor > 0
+            || world.max_pycor < 0
+            || world.patch_size.is_nan()
+            || world.patch_size <= 0.0
+        {
+            return Err(WidgetEditError::InvalidWorld);
+        }
+        let px = |lo: i32, hi: i32, ps: f64| f64::from(hi - lo + 1) * ps;
+        let frame_x = f64::from(w.width) - px(min_pxcor, max_pxcor, patch_size);
+        let frame_y = f64::from(w.height) - px(min_pycor, max_pycor, patch_size);
+        let width = (px(world.min_pxcor, world.max_pxcor, world.patch_size) + frame_x).round();
+        let height = (px(world.min_pycor, world.max_pycor, world.patch_size) + frame_y).round();
+        let path = self.widget_element_path(index)?;
+        let ps = if world.patch_size.fract() == 0.0 {
+            format!("{:.1}", world.patch_size)
+        } else {
+            world.patch_size.to_string()
+        };
+        for (name, value) in [
+            ("minPxcor", world.min_pxcor.to_string()),
+            ("maxPxcor", world.max_pxcor.to_string()),
+            ("minPycor", world.min_pycor.to_string()),
+            ("maxPycor", world.max_pycor.to_string()),
+            ("patchSize", ps),
+            ("width", (width as i64).to_string()),
+            ("height", (height as i64).to_string()),
+        ] {
+            self.set_attribute(&path, name, &value)?;
+        }
+        Ok(())
+    }
+}
+
+/// The world's size and patch size, as in NetLogo's Model Settings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct World {
+    pub min_pxcor: i32,
+    pub max_pxcor: i32,
+    pub min_pycor: i32,
+    pub max_pycor: i32,
+    pub patch_size: f64,
 }
 
 /// A value set from the Interface tab.
@@ -906,6 +976,47 @@ mod tests {
         assert!(!f.text().replace("\r\n", "").contains('\n'));
         f.delete_widget(i).unwrap();
         assert_eq!(f.text(), crlf);
+    }
+
+    #[test]
+    fn world_size_resizes_the_view() {
+        let mut f = Nlogox::parse(FILE).unwrap();
+        let world = World {
+            min_pxcor: -20,
+            max_pxcor: 20,
+            min_pycor: 0,
+            max_pycor: 59,
+            patch_size: 5.0,
+        };
+        f.set_world(0, &world).unwrap();
+        let w = f.typed_widget(0).unwrap();
+        // 41 by 60 patches of 5 pixels, plus the 4 pixels the file had around the world.
+        assert_eq!((w.width, w.height), (209, 304));
+        assert!(f.text().contains(r#"patchSize="5.0""#));
+        assert!(matches!(
+            w.data,
+            WidgetData::View {
+                min_pxcor: -20,
+                max_pycor: 59,
+                ..
+            }
+        ));
+        // Back to the original gives the original bytes.
+        let back = World {
+            min_pxcor: 0,
+            max_pxcor: 79,
+            min_pycor: 0,
+            max_pycor: 119,
+            patch_size: 4.0,
+        };
+        f.set_world(0, &back).unwrap();
+        assert_eq!(f.text(), FILE);
+        let bad = World {
+            min_pxcor: 1,
+            ..back
+        };
+        assert!(f.set_world(0, &bad).is_err());
+        assert!(f.set_world(1, &back).is_err());
     }
 
     #[test]

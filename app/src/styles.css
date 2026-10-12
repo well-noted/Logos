@@ -330,3 +330,6 @@ pre.log { max-height: 160px; overflow: auto; font-size: 11px; background: var(--
 .edit-frame .resize { position: absolute; right: -5px; bottom: -5px; width: 10px; height: 10px; background: var(--focus); cursor: nwse-resize; border-radius: 2px; }
 .btn[aria-pressed="true"] { background: var(--bg-selected); border-color: var(--focus); }
 .inspector .form-grid input[type="text"], .inspector .form-grid select, .inspector .form-grid textarea { width: 100%; min-width: 0; }
+
+.inspector fieldset.world { border: 1px solid var(--border); border-radius: 4px; margin: 8px 0; padding: 4px 8px 8px; }
+.inspector fieldset.world legend { padding: 0 4px; color: var(--text-muted); font-size: 12px; }
