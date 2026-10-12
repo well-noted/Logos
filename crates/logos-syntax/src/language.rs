@@ -129,6 +129,28 @@ pub struct Language {
     pub link_variables: Vec<String>,
     pub observer_variables: Vec<String>,
     pub breed_primitives: Vec<BreedPrimitive>,
+    /// A one-line description of each primitive's syntax, as NetLogo names the types, for
+    /// hover text: `fd number`, `count agentset → number`.
+    pub signatures: HashMap<String, String>,
+}
+
+/// `name args → returns`, with NetLogo's type names.
+fn signature(p: &PrimitiveInfo) -> String {
+    let mut s = String::new();
+    if let Some(l) = &p.left {
+        s.push_str(&l.name);
+        s.push(' ');
+    }
+    s.push_str(&p.name);
+    for a in &p.args {
+        s.push(' ');
+        s.push_str(&a.name);
+    }
+    if let Some(r) = &p.returns {
+        s.push_str(" \u{2192} ");
+        s.push_str(&r.name);
+    }
+    s
 }
 
 impl Language {
@@ -169,6 +191,7 @@ impl Language {
             link_variables: names(&t.agent_variables.link),
             observer_variables: names(&t.agent_variables.observer),
             breed_primitives: Vec::new(),
+            signatures: HashMap::new(),
         };
         for p in &t.primitives {
             let table = match (p.kind, p.extension.is_some()) {
@@ -178,8 +201,14 @@ impl Language {
                 (PrimitiveKind::Reporter, true) => &mut lang.extension_reporters,
             };
             table.insert(p.name.clone(), Syntax::from_info(p));
+            lang.signatures
+                .entry(p.name.clone())
+                .or_insert_with(|| signature(p));
         }
         for b in &t.breed_primitives {
+            lang.signatures
+                .entry(b.primitive.name.clone())
+                .or_insert_with(|| signature(&b.primitive));
             lang.breed_primitives.push(BreedPrimitive {
                 pattern: b.primitive.name.clone(),
                 breed_kind: b.breed_kind,

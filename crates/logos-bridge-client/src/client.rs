@@ -245,9 +245,24 @@ impl Bridge {
         workspace: WorkspaceId,
         source: &str,
     ) -> Result<logos_protocol::CheckResult, ClientError> {
+        self.check_with(workspace, source, None)
+    }
+
+    /// [`Bridge::check`], with the interface globals to compile against (the model's widgets'
+    /// globals, from the editor's copy of the model) instead of the workspace's.
+    pub fn check_with(
+        &self,
+        workspace: WorkspaceId,
+        source: &str,
+        interface_globals: Option<&[String]>,
+    ) -> Result<logos_protocol::CheckResult, ClientError> {
         self.call_typed(
             "workspace.check",
-            logos_protocol::CheckParams { workspace, source },
+            logos_protocol::CheckParams {
+                workspace,
+                source,
+                interface_globals,
+            },
             DEFAULT_TIMEOUT,
         )
     }

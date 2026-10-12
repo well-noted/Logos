@@ -18,7 +18,117 @@ pub enum DecodeError {
 /// as an XML reader does. An entity NetLogo's reader doesn't know (anything other than the five
 /// predefined ones and character references) is kept as written.
 pub fn decode_content(raw: &str) -> Result<String, DecodeError> {
-    let mut out = String::with_capacity(raw.len());
+    decode_content_mapped(raw, 0).map(|d| d.text)
+}
+
+/// Decoded element content and where each part of it is in the file, so that an editor can
+/// convert between offsets in the decoded text (the model's code) and offsets in the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decoded {
+    pub text: String,
+    /// `(decoded offset, file offset)` at the start of each run of bytes that is the same in
+    /// both, in order.
+    anchors: Vec<(usize, usize)>,
+}
+
+impl Decoded {
+    /// The file offset of a byte offset in the decoded text. An offset inside an expanded
+    /// entity or a normalized line end maps to its start.
+    pub fn to_file(&self, offset: usize) -> usize {
+        let i = self.anchors.partition_point(|a| a.0 <= offset).max(1) - 1;
+        let (d, f) = self.anchors[i];
+        let mapped = f + offset.saturating_sub(d);
+        match self.anchors.get(i + 1) {
+            Some(&(_, next)) => mapped.min(next),
+            None => mapped,
+        }
+    }
+
+    /// Like [`Decoded::to_file`], for the end of a range: where text and markup meet, the
+    /// offset maps to the end of the text before the markup.
+    pub fn to_file_end(&self, offset: usize) -> usize {
+        let i = self.anchors.partition_point(|a| a.0 < offset).max(1) - 1;
+        let (d, f) = self.anchors[i];
+        let mapped = f + offset.saturating_sub(d);
+        match self.anchors.get(i + 1) {
+            Some(&(_, next)) => mapped.min(next),
+            None => mapped,
+        }
+    }
+
+    /// The decoded offset of a file offset. A file offset inside markup (a CDATA delimiter,
+    /// a comment) maps to the decoded offset where that markup is; one inside an entity, to
+    /// the end of its expansion.
+    pub fn from_file(&self, offset: usize) -> usize {
+        let i = self.anchors.partition_point(|a| a.1 <= offset).max(1) - 1;
+        let (d, f) = self.anchors[i];
+        let mapped = d + offset.saturating_sub(f);
+        let limit = self
+            .anchors
+            .get(i + 1)
+            .map_or(self.text.len(), |&(next, _)| next);
+        mapped.min(limit)
+    }
+}
+
+struct Builder {
+    text: String,
+    anchors: Vec<(usize, usize)>,
+}
+
+impl Builder {
+    fn anchor(&mut self, file: usize) {
+        let here = self.text.len();
+        if let Some(last) = self.anchors.last_mut()
+            && last.0 == here
+        {
+            *last = (here, file);
+            return;
+        }
+        if let Some(&(d, f)) = self.anchors.last()
+            && f + (here - d) == file
+        {
+            return;
+        }
+        self.anchors.push((here, file));
+    }
+
+    /// Literal text that starts at file offset `at`, with line ends normalized and, in a
+    /// CDATA section, NetLogo's escape for `]]>` undone.
+    fn literal(&mut self, at: usize, s: &str, cdata: bool) {
+        const ESCAPED: &str = "]]\u{E000}>";
+        self.anchor(at);
+        let mut i = 0;
+        while i < s.len() {
+            let rest = &s[i..];
+            if rest.starts_with("\r\n") {
+                self.anchor(at + i);
+                self.text.push('\n');
+                i += 2;
+                self.anchor(at + i);
+            } else if rest.starts_with('\r') {
+                self.text.push('\n');
+                i += 1;
+            } else if cdata && rest.starts_with(ESCAPED) {
+                self.text.push_str("]]");
+                i += 2 + CDATA_ESCAPE.len_utf8();
+                self.anchor(at + i);
+            } else {
+                let c = rest.chars().next().unwrap_or_default();
+                self.text.push(c);
+                i += c.len_utf8();
+            }
+        }
+    }
+}
+
+/// [`decode_content`], with a map back to the file; `base` is the file offset of `raw`.
+pub fn decode_content_mapped(raw: &str, base: usize) -> Result<Decoded, DecodeError> {
+    let mut b = Builder {
+        text: String::with_capacity(raw.len()),
+        anchors: Vec::new(),
+    };
+    b.anchor(base);
     let mut i = 0;
     while i < raw.len() {
         let rest = &raw[i..];
@@ -27,28 +137,35 @@ pub fn decode_content(raw: &str) -> Result<String, DecodeError> {
                 what: "CDATA section",
                 at: i,
             })?;
-            let inner = normalize_newlines(&body[..end]);
-            out.push_str(&inner.replace(&format!("]]{CDATA_ESCAPE}>"), "]]>"));
-            i += "<![CDATA[".len() + end + "]]>".len();
+            let start = i + "<![CDATA[".len();
+            b.literal(base + start, &body[..end], true);
+            i = start + end + "]]>".len();
+            b.anchor(base + i);
         } else if let Some(body) = rest.strip_prefix("<!--") {
             let end = body.find("-->").ok_or(DecodeError::Unterminated {
                 what: "comment",
                 at: i,
             })?;
             i += "<!--".len() + end + "-->".len();
+            b.anchor(base + i);
         } else if rest.starts_with('<') {
             return Err(DecodeError::Markup(i));
         } else if rest.starts_with('&') {
             let (s, used) = entity(rest);
-            out.push_str(&s);
+            b.anchor(base + i);
+            b.text.push_str(&s);
             i += used;
+            b.anchor(base + i);
         } else {
             let next = rest.find(['<', '&']).unwrap_or(rest.len());
-            out.push_str(&normalize_newlines(&rest[..next]));
+            b.literal(base + i, &rest[..next], false);
             i += next;
         }
     }
-    Ok(out)
+    Ok(Decoded {
+        text: b.text,
+        anchors: b.anchors,
+    })
 }
 
 /// An attribute value written as `raw` (between the quotes), as an XML reader returns it:
@@ -174,6 +291,34 @@ mod tests {
         assert_eq!(decode_content("&harr; &").unwrap(), "&harr; &");
         assert!(decode_content("<![CDATA[open").is_err());
         assert_eq!(decode_content("a<b/>"), Err(DecodeError::Markup(1)));
+    }
+
+    #[test]
+    fn maps_decoded_offsets_to_the_file() {
+        let raw = "x<!-- c -->y\r\nz&lt;w<![CDATA[a\r\nb]]\u{E000}>c]]>d";
+        let d = decode_content_mapped(raw, 100).unwrap();
+        assert_eq!(d.text, decode_content(raw).unwrap());
+        assert_eq!(d.text, "xy\nz<wa\nb]]>cd");
+        // Every character of the decoded text that is written as itself is found there.
+        for (i, c) in d.text.char_indices() {
+            let f = d.to_file(i) - 100;
+            if !matches!(c, '\n' | '<' | '>') {
+                assert_eq!(raw[f..].chars().next(), Some(c), "at {i}");
+            }
+            assert_eq!(d.from_file(d.to_file(i)), i, "at {i}");
+        }
+        assert_eq!(d.to_file(d.text.len()), 100 + raw.len());
+        let cdata = "<![CDATA[to go end]]>";
+        let c = decode_content_mapped(cdata, 0).unwrap();
+        assert_eq!(c.to_file(0), 9);
+        assert_eq!(c.to_file_end(c.text.len()), cdata.len() - 3);
+        // Inside markup, a file offset maps to the end of the text before it, or of the
+        // entity's expansion.
+        assert_eq!(
+            d.from_file(100 + raw.find("&lt;").unwrap() + 2),
+            d.text.find('<').unwrap() + 1
+        );
+        assert_eq!(d.from_file(100 + 3), 1);
     }
 
     #[test]

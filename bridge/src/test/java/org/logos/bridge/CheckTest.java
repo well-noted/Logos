@@ -50,4 +50,30 @@ class CheckTest {
             assertEquals("[{ok=5.0}]", String.valueOf(obs.get("values")));
         }
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void usesTheInterfaceGlobalsTheEditorPasses() throws Exception {
+        try (TestClient c = new TestClient()) {
+            // A model with a slider whose code doesn't compile: NetLogo leaves the slider's
+            // global out of the workspace's program.
+            String model = WorkspaceTest.model("to setup set x rate end").replace("</view>",
+                    "</view>\n    <slider x=\"0\" y=\"0\" width=\"100\" height=\"40\" "
+                    + "variable=\"rate\" min=\"0\" max=\"10\" step=\"1\" default=\"5\" "
+                    + "direction=\"Horizontal\" display=\"rate\"></slider>");
+            Map<String, Object> opened = TestClient.result(c.call("workspace.openString",
+                    params("contents", model)));
+            assertEquals(false, opened.get("compiled"));
+            long ws = (Long) opened.get("workspace");
+            String fixed = "globals [x]\nto setup set x rate end\n";
+            List<Map<String, Object>> without = (List<Map<String, Object>>) TestClient.result(
+                    c.call("workspace.check", params("workspace", ws, "source", fixed)))
+                    .get("errors");
+            assertEquals(1, without.size(), without.toString());
+            List<Object> with = (List<Object>) TestClient.result(c.call("workspace.check",
+                    params("workspace", ws, "source", fixed, "interfaceGlobals",
+                            List.of("rate")))).get("errors");
+            assertEquals(List.of(), with);
+        }
+    }
 }
