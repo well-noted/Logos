@@ -45,6 +45,8 @@ LOGOS_BRIDGE_JAR=<any existing file>
 | `src/code.tsx`, `src/info.tsx` | Code and Info tabs |
 | `src/editor.tsx` | Interface edit mode: moving, resizing, adding and deleting widgets, property sheets, world settings, undo |
 | `src/inspector.tsx` | Agent inspector, watches, pause when |
+| `src/search.ts`, `src/searchpanel.tsx` | Search and replace across code, Info and widgets |
+| `src/project.tsx`, `src/experiments.tsx` | Files activity, project setup and secrets; experiments, the run dashboard and results |
 | `src/panels.tsx` | Activity bar, outline, bottom panel (Command Center, Output, Problems, Log, Activity), status bar |
 | `src/settings.tsx`, `src/themes.ts` | Settings, built-in and custom themes (D-32) |
 | `src/commands.ts`, `src/palette.tsx` | Every action, keyboard shortcuts, command palette |

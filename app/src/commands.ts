@@ -33,6 +33,8 @@ export const COMMANDS: Command[] = [
   { id: "view.code", title: "Go to Code tab", menu: "View", key: "Ctrl+3", enabled: hasModel, run: () => { modelTab.value = "code"; } },
   { id: "view.outline", title: "Show model outline", menu: "View", key: "Ctrl+Shift+O",
     run: () => { activityView.value = activityView.value === "model" ? null : "model"; } },
+  { id: "view.search", title: "Search and replace in the model", menu: "Edit", key: "Ctrl+Shift+F",
+    run: () => { activityView.value = "search"; setTimeout(() => (document.querySelector(".search-panel input") as HTMLInputElement | null)?.focus(), 0); } },
   { id: "view.bottom", title: "Show or hide the bottom panel", menu: "View", key: "Ctrl+J", run: () => { bottomOpen.value = !bottomOpen.value; } },
   { id: "view.commandCenter", title: "Go to Command Center", menu: "View", key: "Ctrl+`",
     run: () => { bottomOpen.value = true; bottomTab.value = "command"; setTimeout(() => document.getElementById("cc-input")?.focus(), 0); } },

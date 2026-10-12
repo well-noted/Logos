@@ -91,6 +91,22 @@ export function revealOffset(offset: number) {
   current.focus();
 }
 
+/** Selects a range in the open editor, as search does. */
+export function revealRange(start: number, end: number) {
+  if (!current) return;
+  const len = current.state.doc.length;
+  current.dispatch({ selection: { anchor: Math.min(start, len), head: Math.min(end, len) }, scrollIntoView: true });
+  current.focus();
+}
+
+/** Applies replacements to the open editor, so the editor's own undo covers them. False
+ * when the Code tab isn't open; the caller then sets the code directly. */
+export function changeOpenCode(expected: string, changes: { from: number; to: number; insert: string }[]): boolean {
+  if (!current || current.state.doc.toString() !== expected) return false;
+  current.dispatch({ changes, userEvent: "input.replace" });
+  return true;
+}
+
 export function CodeTab() {
   const host = useRef<HTMLDivElement>(null);
   const m = model.value;
