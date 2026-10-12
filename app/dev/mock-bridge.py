@@ -117,6 +117,7 @@ class Workspace:
         n = len(self.turtles)
         ticks = float("nan") if self.ticks is None else self.ticks
         b = struct.pack("<BIIQd", 2, self.id, run, seq, ticks)
+        b += bytes((1,))  # layout version 1
         b += struct.pack("<Iiiii", pw * ph, self.min_px, self.max_px, self.min_py, self.max_py)
         b += bytes((30, 120, 40, 255)) * (pw * ph)
         b += struct.pack("<I", n)
@@ -128,6 +129,16 @@ class Workspace:
         b += struct.pack(f"<{n}H", *([0] * n))
         b += struct.pack(f"<{n}H", *([1 if i % 3 == 0 else 0 for i in range(n)]))
         b += bytes(n)
+        # Links: each turtle linked to the next (undirected, gray).
+        m = max(0, n - 1)
+        b += struct.pack("<I", m)
+        b += struct.pack(f"<{m}d", *[self.turtles[i][0] for i in range(m)])
+        b += struct.pack(f"<{m}d", *[self.turtles[i + 1][0] for i in range(m)])
+        b += bytes((141, 141, 141, 255)) * m
+        b += struct.pack(f"<{m}d", *([0.0] * m))
+        b += struct.pack(f"<{m}H", *([0] * m))
+        b += struct.pack(f"<{m}H", *([0] * m))
+        b += bytes(m) + bytes(m)
         return b
 
     def report(self, r):
@@ -282,6 +293,16 @@ def run_loop(ws, run_id, source, repeat, stream):
         if ws.ticks is not None and ws.ticks >= 2000:
             reason = "stopped"
             break
+        cond = ws.run.get("stopWhen")
+        if cond:
+            v, err = ws.report(cond)
+            if v is True:
+                reason = "condition"
+                break
+        speed = ws.run.get("speed")
+        if speed is not None:
+            # A rough stand-in for NetLogo's pacing: slower toward -50.
+            time.sleep(max(0.0, -speed) / 50.0 * 0.5 + (0.03 if speed <= 0 else 0.0))
     emit(force=True)
     with ws.lock:
         ws.run = None
@@ -289,12 +310,23 @@ def run_loop(ws, run_id, source, repeat, stream):
                             "ticks": ws.ticks, "elapsedMillis": (time.time() - started) * 1000, "error": None})
 
 
+def snapshot(ws, view, agents):
+    """Protocol 1 (G15): frames with run number 0."""
+    with ws.lock:
+        ws.snapshots = getattr(ws, "snapshots", 0) + 1
+        seq = ws.snapshots
+    if view:
+        send(2, ws.view_frame(0, seq))
+    if agents:
+        send(2, ws.agent_frame(0, seq))
+
+
 def handle(msg):
     id_ = msg.get("id")
     method = msg.get("method")
     p = msg.get("params") or {}
     if method == "engine.hello":
-        return reply(id_, {"protocolVersion": 0, "bridgeVersion": "mock-0", "netlogoVersion": "NetLogo 7.0.4 (mock bridge)",
+        return reply(id_, {"protocolVersion": 1, "bridgeVersion": "mock-1", "netlogoVersion": "NetLogo 7.0.4 (mock bridge)",
                            "javaVersion": "none", "javaVendor": "mock-bridge.py", "extensionsDirs": [], "modelsDir": None})
     if method == "engine.shutdown":
         reply(id_, {})
@@ -310,8 +342,8 @@ def handle(msg):
         return reply(id_, error={"code": 1003, "message": "no such workspace"})
     if method == "workspace.command":
         src = p.get("source", "")
-        if ws.run is not None:
-            return reply(id_, error={"code": 1005, "message": "busy", "data": {"run": ws.run["id"]}})
+        # Protocol 1 (G1): during a run the bridge runs commands between two iterations; the
+        # mock runs them at once.
         for line in src.splitlines() or [src]:
             low = line.strip().lower()
             m = re.match(r"set\s+([\w\-?]+)\s+(.*)", low)
@@ -335,7 +367,26 @@ def handle(msg):
                                             "outputArea": bool(m.group(1))})
             if low == "error":
                 return reply(id_, error={"code": 1001, "message": "Nothing named ERROR has been defined.", "data": {"span": {"start": 0, "end": 5, "file": None}}})
+        snap = p.get("snapshot") or {}
+        if ws.run is None:
+            snapshot(ws, snap.get("view", False), snap.get("agents", False))
         return reply(id_, {})
+    if method == "workspace.snapshot":
+        snapshot(ws, p.get("view", True), p.get("agents", False))
+        return reply(id_, {})
+    if method == "workspace.runSettings":
+        with ws.lock:
+            if ws.run is None:
+                return reply(id_, {"applied": False})
+            if "speed" in p:
+                ws.run["speed"] = p["speed"]
+            if "stopWhen" in p:
+                ws.run["stopWhen"] = p["stopWhen"]
+        return reply(id_, {"applied": True})
+    if method == "workspace.plots":
+        return reply(id_, {"plots": []})
+    if method == "workspace.recompile":
+        return reply(id_, {"applied": not p.get("dryRun", False), "worldCleared": False, "losses": []})
     if method == "workspace.observe":
         vals = []
         for r in p.get("reporters", []):
@@ -347,7 +398,7 @@ def handle(msg):
             if ws.run is not None:
                 return reply(id_, error={"code": 1005, "message": "busy", "data": {"run": ws.run["id"]}})
             ws.run_count += 1
-            ws.run = {"id": ws.run_count, "stop": False}
+            ws.run = {"id": ws.run_count, "stop": False, "speed": p.get("speed"), "stopWhen": p.get("stopWhen")}
             run_id = ws.run_count
         reply(id_, {"run": run_id})
         threading.Thread(target=run_loop, args=(ws, run_id, p.get("source", ""), p.get("repeat"), p.get("stream") or {}), daemon=True).start()

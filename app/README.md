@@ -27,7 +27,7 @@ Without `app/dist`, `cargo build` still works and the app shows a page asking fo
 
 ## Working without NetLogo
 
-`dev/mock-bridge.py` stands in for the JVM bridge so the screens can be worked on where NetLogo isn't installed (for example in a cloud session). It speaks enough of protocol 0 to open a model, run commands, stream a pretend view and answer monitors. It does not run NetLogo code, and no test of NetLogo behavior may use it.
+`dev/mock-bridge.py` stands in for the JVM bridge so the screens can be worked on where NetLogo isn't installed (for example in a cloud session). It speaks enough of protocol 1 to open a model, run commands (also during a run), send snapshots, stream a pretend view, change a run's speed and stop condition, and answer monitors. It has no plots and its Apply removes nothing. It does not run NetLogo code, and no test of NetLogo behavior may use it.
 
 ```
 LOGOS_JAVA=app/dev/mock-bridge.py

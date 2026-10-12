@@ -619,6 +619,23 @@ async fn autosave_now(core: CoreState<'_>) -> AppResult<()> {
     .await
 }
 
+/// What applying the edited code would remove from the world (G5); changes nothing.
+#[tauri::command]
+async fn model_apply_check(
+    core: CoreState<'_>,
+    id: u64,
+) -> AppResult<logos_protocol::RecompileResult> {
+    let core = core.inner().clone();
+    blocking(move || core.sessions()?.apply_check(id)).await
+}
+
+/// "Pause when" (G6): ends a forever run when the reporter reports true; empty for none.
+#[tauri::command]
+async fn model_pause_when(core: CoreState<'_>, id: u64, condition: String) -> AppResult<()> {
+    let core = core.inner().clone();
+    blocking(move || core.sessions()?.set_pause_when(id, &condition)).await
+}
+
 #[tauri::command]
 async fn model_apply(core: CoreState<'_>, id: u64) -> AppResult<ModelView> {
     let core = core.inner().clone();
@@ -1353,6 +1370,8 @@ fn main() {
             model_set_info,
             model_save,
             model_apply,
+            model_apply_check,
+            model_pause_when,
             model_outline,
             model_widgets,
             model_edit_widget,

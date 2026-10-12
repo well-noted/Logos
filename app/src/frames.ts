@@ -15,6 +15,13 @@ export interface AgentState {
   n: number; patches: Uint8ClampedArray<ArrayBuffer>;
   who: Float64Array; xcor: Float64Array; ycor: Float64Array; heading: Float64Array; size: Float64Array;
   color: Uint32Array; shape: Uint16Array; breed: Uint16Array; hidden: Uint8Array;
+  links: LinkColumns;
+}
+
+/** Link variables (agent state layout version 1), ordered by end1, end2 and breed. */
+export interface LinkColumns {
+  n: number; end1: Float64Array; end2: Float64Array; thickness: Float64Array;
+  color: Uint32Array; shape: Uint16Array; breed: Uint16Array; hidden: Uint8Array; directed: Uint8Array;
 }
 
 export function decode(buf: ArrayBuffer): { view?: ViewFrame; agents?: AgentState } {
@@ -41,8 +48,28 @@ export function decode(buf: ArrayBuffer): { view?: ViewFrame; agents?: AgentStat
   off = Math.ceil((off + n * 4) / 8) * 8;
   const shape = new Uint16Array(buf, off, n); off += n * 2;
   const breed = new Uint16Array(buf, off, n); off += n * 2;
-  const hidden = new Uint8Array(buf, off, n);
-  return { agents: { seq, ticks, minPx, maxPx, minPy, maxPy, pw, ph, n, patches, who, xcor, ycor, heading, size, color, shape, breed, hidden } };
+  const hidden = new Uint8Array(buf, off, n); off += n;
+  const links = decodeLinks(buf, dv, Math.ceil(off / 8) * 8);
+  return { agents: { seq, ticks, minPx, maxPx, minPy, maxPy, pw, ph, n, patches, who, xcor, ycor, heading, size, color, shape, breed, hidden, links } };
+}
+
+function decodeLinks(buf: ArrayBuffer, dv: DataView, start: number): LinkColumns {
+  // Frames from a host older than layout version 1 end after the turtles.
+  if (start + 8 > buf.byteLength) {
+    const z = new Float64Array(0);
+    return { n: 0, end1: z, end2: z, thickness: z, color: new Uint32Array(0), shape: new Uint16Array(0), breed: new Uint16Array(0), hidden: new Uint8Array(0), directed: new Uint8Array(0) };
+  }
+  const n = dv.getUint32(start, true);
+  let off = start + 8;
+  const f64 = () => { const a = new Float64Array(buf, off, n); off += n * 8; return a; };
+  const end1 = f64(), end2 = f64(), thickness = f64();
+  const color = new Uint32Array(buf, off, n);
+  off = Math.ceil((off + n * 4) / 8) * 8;
+  const shape = new Uint16Array(buf, off, n); off += n * 2;
+  const breed = new Uint16Array(buf, off, n); off += n * 2;
+  const hidden = new Uint8Array(buf, off, n); off += n;
+  const directed = new Uint8Array(buf, off, n);
+  return { n, end1, end2, thickness, color, shape, breed, hidden, directed };
 }
 
 type Listener = () => void;

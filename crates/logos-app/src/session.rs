@@ -4,19 +4,12 @@
 //! dispatcher thread is the only reader of the bridge's notifications and data frames, and
 //! routes them to the model whose workspace they belong to.
 //!
-//! Until protocol 1 (Part B) lands, three things the design needs are done here on top of
-//! protocol 0, and are replaced by bridge methods later:
-//!
-//! - Snapshots (G15): a `workspace.run` of nothing with `repeat: 0` sends the view and agent
-//!   state as they are, without running an iteration or touching the random number generator.
-//! - Writes during a run (G1): a forever button is driven by a runner thread. Sliders, switches,
-//!   the Command Center and once-buttons queue their commands; the runner stops the bridge run
-//!   after its current iteration, runs the queued commands, and starts it again. As with G1,
-//!   writes take effect between two iterations, in arrival order, on the main generator.
-//! - The speed slider (G2): below full speed the runner runs one iteration at a time with a
-//!   delay between them.
+//! Protocol 1 does the work of a forever button: one bridge run per press, with commands sent
+//! during it run between two iterations (G1), the speed slider and "on ticks" changed in place
+//! (G2), "Pause when" as the run's stop condition (G6), snapshots after commands (G15), plots
+//! (G4), and Apply without reopening the model (G5).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -26,7 +19,8 @@ use logos_bridge_client::{Bridge, ClientError};
 use logos_nlogox::widgets::{AgentKind, WidgetData, netlogo_string};
 use logos_nlogox::{Nlogox, Widget, WidgetValue};
 use logos_protocol::{
-    AgentFrame, DataFrame, NlValue, ObserveStream, RunStreams, StreamRate, ViewFrame, WorkspaceId,
+    AgentFrame, DataFrame, NlValue, ObserveStream, RecompileResult, RunOptions, RunSettings,
+    RunStreams, SnapshotSpec, StreamRate, StreamUpdate, ViewFrame, WorkspaceId,
 };
 use serde::Serialize;
 use serde_json::{Value as Json, json};
@@ -141,22 +135,18 @@ impl Finishes {
     }
 }
 
-/// What a forever button runs.
+/// A forever button's run.
 #[derive(Debug, Clone)]
 struct ForeverRun {
     button: Option<usize>,
+    /// The bridge's run number; 0 until the run has started.
+    run: u64,
 }
 
-/// The runner's shared state.
+/// The forever run in progress, if any.
 #[derive(Default)]
 struct RunControl {
-    /// The forever run in progress, if any.
     active: Option<ForeverRun>,
-    /// The bridge run the runner is waiting on.
-    bridge_run: Option<u64>,
-    /// Commands to run between two iterations (G1).
-    pending: VecDeque<String>,
-    stop_requested: bool,
 }
 
 /// The document side of a model: the file as edited, and what is saved.
@@ -165,6 +155,8 @@ struct Doc {
     saved_text: String,
     /// The code the interactive workspace was last compiled with.
     applied_code: String,
+    /// The widgets' global variables when the workspace was last compiled.
+    applied_globals: Vec<String>,
     /// File texts before each edit (code, info, interface, experiments), for one undo history
     /// per model (I3); most recent last.
     history: crate::history::History,
@@ -199,10 +191,12 @@ pub struct Session {
     run: Mutex<RunControl>,
     /// Serializes commands, snapshots and run starts for this model.
     ops: Mutex<()>,
-    /// 0..=100; 100 is full speed.
+    /// The speed slider, 0..=100; 100 is full speed, 50 NetLogo's normal speed.
     speed: AtomicU64,
     /// Whether the view's frames are sent per iteration or only when ticks change.
     on_ticks: AtomicBool,
+    /// "Pause when": a reporter that ends a forever run when it reports true (G6).
+    pause_when: Mutex<Option<String>>,
     last_monitors: Mutex<Instant>,
     last_ticks: Mutex<Option<f64>>,
 }
@@ -283,7 +277,7 @@ pub fn encode_view(v: &ViewFrame) -> Vec<u8> {
 /// Agent state, laid out for typed-array views in the front end (as in spike F1): header;
 /// min/max pxcor/pycor (4 × i32), turtle count (u32), padding; patch RGBA padded to 8; who,
 /// xcor, ycor, heading, size (f64 columns); color (u32), padded to 8; shape, breed (u16);
-/// hidden (u8).
+/// hidden (u8); then the links (see below).
 pub fn encode_agents(a: &AgentFrame) -> Vec<u8> {
     let n = a.turtles.len();
     let mut out = Vec::with_capacity(64 + a.patch_rgba.len() + n * 53 + 16);
@@ -316,6 +310,33 @@ pub fn encode_agents(a: &AgentFrame) -> Vec<u8> {
         out.extend_from_slice(&v.to_le_bytes());
     }
     out.extend(t.hidden.iter().map(|&h| u8::from(h)));
+    // Links (agent state layout version 1): count (u32), padding; end1, end2, thickness (f64
+    // columns); color (u32), padded to 8; shape, breed (u16); hidden, directed (u8).
+    while !out.len().is_multiple_of(8) {
+        out.push(0);
+    }
+    let l = &a.links;
+    out.extend_from_slice(&(l.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    for col in [&l.end1, &l.end2, &l.thickness] {
+        for v in col {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    for c in &l.color {
+        out.extend_from_slice(c);
+    }
+    while !out.len().is_multiple_of(8) {
+        out.push(0);
+    }
+    for v in &l.shape {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in &l.breed {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out.extend(l.hidden.iter().map(|&h| u8::from(h)));
+    out.extend(l.directed.iter().map(|&d| u8::from(d)));
     out
 }
 
@@ -327,6 +348,17 @@ pub fn for_agents(kind: &str, source: &str) -> String {
         "links" | "Link" => format!("ask links [\n{source}\n]"),
         _ => source.to_string(),
     }
+}
+
+/// The value a slider, switch, chooser or input box holds in the model file.
+pub fn current_value(data: &WidgetData) -> Option<WidgetValue> {
+    Some(match data {
+        WidgetData::Slider { value, .. } => WidgetValue::Number(*value),
+        WidgetData::Switch { on, .. } => WidgetValue::Bool(*on),
+        WidgetData::Chooser { current, .. } => WidgetValue::Choice(*current),
+        WidgetData::Input { value, .. } => WidgetValue::Text(value.clone()),
+        _ => return None,
+    })
 }
 
 /// The `set` command that gives a widget's variable a value.
@@ -513,6 +545,14 @@ impl Sessions {
                     self.emit_monitors(&s, obs.ticks, &obs.values);
                 }
             }
+            "run.plots" => {
+                if let Some(s) = session {
+                    (self.emit)(
+                        "model-plots",
+                        json!({ "model": s.id, "full": false, "plots": p.get("plots") }),
+                    );
+                }
+            }
             "run.finished" => {
                 let run = p.get("run").and_then(Json::as_u64).unwrap_or(0);
                 let f = Finished {
@@ -577,24 +617,18 @@ impl Sessions {
         }
     }
 
-    /// Sends the view and agent state as they are now (G15, see the module comment).
+    /// Sends the view and agent state as they are now (G15), and plot changes.
     fn snapshot(&self, s: &Session) {
-        let streams = RunStreams {
-            view: Some(StreamRate {
-                every_ticks: 1,
-                max_fps: 1000.0,
-                update: Default::default(),
-            }),
-            agents: Some(StreamRate {
-                every_ticks: 1,
-                max_fps: 1000.0,
-                update: Default::default(),
-            }),
-            observe: None,
-        };
-        let ws = s.workspace();
-        if let Ok(run) = self.bridge.run(ws, "", Some(0), &streams) {
-            self.finishes.wait(ws.0, run, STOP_TIMEOUT);
+        let _ = self.bridge.snapshot(s.workspace(), true, true);
+    }
+
+    /// Sends every plot to the front end; from then on the bridge sends changes (G4).
+    fn send_plots(&self, s: &Session) {
+        if let Ok(p) = self.bridge.plots(s.workspace()) {
+            (self.emit)(
+                "model-plots",
+                json!({ "model": s.id, "full": true, "plots": p.plots }),
+            );
         }
     }
 
@@ -618,6 +652,7 @@ impl Sessions {
             .collect();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let applied_code = nlogox.code().unwrap_or_default();
+        let applied_globals = interface_globals(&nlogox);
         let session = Arc::new(Session {
             id,
             path: path.to_path_buf(),
@@ -626,6 +661,7 @@ impl Sessions {
                 nlogox,
                 saved_text: text,
                 applied_code,
+                applied_globals,
                 history: Default::default(),
                 disk: disk_stamp(path),
             }),
@@ -634,6 +670,7 @@ impl Sessions {
             ops: Mutex::new(()),
             speed: AtomicU64::new(100),
             on_ticks: AtomicBool::new(false),
+            pause_when: Mutex::new(None),
             last_monitors: Mutex::new(Instant::now() - MONITOR_INTERVAL),
             last_ticks: Mutex::new(None),
         });
@@ -649,6 +686,7 @@ impl Sessions {
             self.snapshot(&s);
             self.refresh_monitors(&s);
         }
+        self.send_plots(&s);
         Ok(())
     }
 
@@ -662,25 +700,24 @@ impl Sessions {
 
     // ------------------------------------------------------------------------ commands
 
-    /// Runs commands now, or between two iterations when a forever button is running (G1).
+    /// Runs commands now, or between two iterations when a forever button is running (G1);
+    /// the bridge queues them. When nothing runs, the bridge sends a snapshot after them (G15).
     pub fn command(&self, id: u64, source: &str) -> AppResult<()> {
         let s = self.get(id)?;
-        {
-            let mut run = s.run.lock().unwrap();
-            if run.active.is_some() {
-                run.pending.push_back(source.to_string());
-                drop(run);
-                // The runner sees the run end, runs the queued commands and starts it again.
-                let _ = self.bridge.stop(s.workspace());
-                return Ok(());
-            }
+        let running = s.run.lock().unwrap().active.is_some();
+        let result = self.bridge.command_and_snapshot(
+            s.workspace(),
+            source,
+            SnapshotSpec {
+                view: true,
+                agents: true,
+            },
+            Duration::from_secs(3600),
+        );
+        if !running {
+            let _ops = s.ops.lock().unwrap();
+            self.refresh_monitors(&s);
         }
-        let _ops = s.ops.lock().unwrap();
-        let result =
-            self.bridge
-                .command_with_timeout(s.workspace(), source, Duration::from_secs(3600));
-        self.snapshot(&s);
-        self.refresh_monitors(&s);
         result.map_err(AppError::from)
     }
 
@@ -759,28 +796,28 @@ impl Sessions {
 
     pub fn stop(&self, id: u64) -> AppResult<()> {
         let s = self.get(id)?;
-        let mut run = s.run.lock().unwrap();
-        if run.active.is_some() {
-            run.stop_requested = true;
-            drop(run);
+        if s.run.lock().unwrap().active.is_some() {
             self.bridge.stop(s.workspace())?;
         }
         Ok(())
     }
 
+    fn view_rate(s: &Session) -> StreamRate {
+        StreamRate {
+            update: if s.on_ticks.load(Ordering::SeqCst) {
+                StreamUpdate::Ticks
+            } else {
+                StreamUpdate::Iteration
+            },
+            ..StreamRate::new(30.0)
+        }
+    }
+
     fn streams(&self, s: &Session) -> RunStreams {
         let monitors: Vec<String> = s.monitors().into_iter().map(|(_, r, _)| r).collect();
         RunStreams {
-            view: Some(StreamRate {
-                every_ticks: 1,
-                max_fps: 30.0,
-                update: Default::default(),
-            }),
-            agents: Some(StreamRate {
-                every_ticks: 1,
-                max_fps: 10.0,
-                update: Default::default(),
-            }),
+            view: Some(Self::view_rate(s)),
+            agents: Some(StreamRate::new(10.0)),
             observe: (!monitors.is_empty()).then_some(ObserveStream {
                 reporters: monitors,
                 every_ticks: 1,
@@ -788,6 +825,16 @@ impl Sessions {
         }
     }
 
+    fn run_options(s: &Session) -> RunOptions {
+        RunOptions {
+            delay_millis: 0.0,
+            speed: netlogo_speed(s.speed.load(Ordering::SeqCst)),
+            stop_when: s.pause_when.lock().unwrap().clone(),
+        }
+    }
+
+    /// Starts a forever button's commands as one bridge run, and a thread that reports its
+    /// end to the front end.
     fn start_forever(
         self: &Arc<Self>,
         s: &Arc<Session>,
@@ -799,23 +846,29 @@ impl Sessions {
             if run.active.is_some() {
                 return Err(AppError::new("The model is already running."));
             }
-            *run = RunControl {
-                active: Some(ForeverRun { button }),
-                ..RunControl::default()
-            };
+            run.active = Some(ForeverRun { button, run: 0 });
         }
-        // Compile errors are reported at once; the runner reports everything else.
-        let first = {
+        // Compile errors (in the commands or the stop condition) are reported at once.
+        let started = {
             let _ops = s.ops.lock().unwrap();
-            self.start_bridge_run(s, &source)
+            self.bridge.run_with(
+                s.workspace(),
+                &source,
+                None,
+                &self.streams(s),
+                &Self::run_options(s),
+            )
         };
-        let first = match first {
+        let run = match started {
             Ok(r) => r,
             Err(e) => {
                 s.run.lock().unwrap().active = None;
-                return Err(e);
+                return Err(e.into());
             }
         };
+        if let Some(a) = s.run.lock().unwrap().active.as_mut() {
+            a.run = run;
+        }
         (self.emit)(
             "model-run",
             json!({ "model": s.id, "running": true, "button": button }),
@@ -823,92 +876,31 @@ impl Sessions {
         let (me, s2) = (self.clone(), s.clone());
         std::thread::Builder::new()
             .name(format!("logos-runner-{}", s.id))
-            .spawn(move || me.runner(s2, source, button, first))
+            .spawn(move || me.await_forever(s2, button, run))
             .map_err(|e| AppError::new(e.to_string()))?;
         Ok(())
     }
 
-    /// Starts one bridge run of a forever button's commands: until it stops at full speed,
-    /// one iteration below it.
-    fn start_bridge_run(&self, s: &Session, source: &str) -> AppResult<u64> {
-        let full = s.speed.load(Ordering::SeqCst) >= 100;
-        let run = self.bridge.run(
-            s.workspace(),
-            source,
-            if full { None } else { Some(1) },
-            &self.streams(s),
-        )?;
-        s.run.lock().unwrap().bridge_run = Some(run);
-        Ok(run)
-    }
-
-    fn runner(self: Arc<Self>, s: Arc<Session>, source: String, button: Option<usize>, first: u64) {
+    fn await_forever(self: Arc<Self>, s: Arc<Session>, button: Option<usize>, run: u64) {
         let ws = s.workspace();
-        let mut current = Some(first);
-        let mut outcome: Option<Finished> = None;
-        while let Some(run) = current.take() {
-            let Some(f) = self
-                .finishes
-                .wait(ws.0, run, Duration::from_secs(24 * 3600))
-            else {
-                outcome = Some(Finished {
-                    reason: "error".into(),
-                    ticks: None,
-                    error: Some(json!({ "message": "no answer from the bridge" })),
-                });
-                break;
-            };
-            let mut ops = s.ops.lock().unwrap();
-            // Queued writes run between two iterations (G1).
-            let pending: Vec<String> = s.run.lock().unwrap().pending.drain(..).collect();
-            for cmd in pending {
-                if let Err(e) = self.bridge.command(ws, &cmd) {
-                    let e = AppError::from(e);
-                    (self.emit)("model-error", json!({ "model": s.id, "error": e }));
-                }
-            }
-            let ended_by_model = matches!(f.reason.as_str(), "stopped" | "error");
-            if s.run.lock().unwrap().stop_requested || ended_by_model {
-                outcome = Some(f);
-                break;
-            }
-            // Below full speed, wait before the next iteration (G2).
-            let speed = s.speed.load(Ordering::SeqCst);
-            if speed < 100 && f.reason == "completed" {
-                drop(ops);
-                std::thread::sleep(delay_for(speed));
-                if s.run.lock().unwrap().stop_requested {
-                    outcome = Some(f);
-                    break;
-                }
-                ops = s.ops.lock().unwrap();
-            }
-            // Halted for queued writes or a speed change, or one stepped iteration done: go on.
-            match self.start_bridge_run(&s, &source) {
-                Ok(r) => current = Some(r),
-                Err(e) => {
-                    (self.emit)("model-error", json!({ "model": s.id, "error": e }));
-                    break;
-                }
-            }
-            drop(ops);
-        }
-        {
-            let mut run = s.run.lock().unwrap();
-            *run = RunControl::default();
-        }
-        let error = outcome
-            .as_ref()
-            .filter(|f| f.reason == "error")
-            .map(run_error);
+        let outcome = self
+            .finishes
+            .wait(ws.0, run, Duration::from_secs(365 * 24 * 3600))
+            .unwrap_or(Finished {
+                reason: "error".into(),
+                ticks: None,
+                error: Some(json!({ "message": "no answer from the bridge" })),
+            });
+        *s.run.lock().unwrap() = RunControl::default();
+        let error = (outcome.reason == "error").then(|| run_error(&outcome));
         (self.emit)(
             "model-run",
             json!({
                 "model": s.id,
                 "running": false,
                 "button": button,
-                "reason": outcome.as_ref().map(|f| f.reason.clone()),
-                "ticks": outcome.as_ref().and_then(|f| f.ticks),
+                "reason": outcome.reason,
+                "ticks": outcome.ticks,
                 "error": error,
             }),
         );
@@ -916,22 +908,54 @@ impl Sessions {
         self.refresh_monitors(&s);
     }
 
-    /// Changes the speed (0 to 100). A run at full speed switches to stepped iterations at its
-    /// next iteration, and back.
+    /// Changes the speed (0 to 100), in place during a run (G2).
     pub fn set_speed(&self, id: u64, speed: u64) -> AppResult<()> {
         let s = self.get(id)?;
-        let old = s.speed.swap(speed.min(100), Ordering::SeqCst);
-        let crossed = (old >= 100) != (speed >= 100);
-        if crossed && s.run.lock().unwrap().active.is_some() {
-            // The runner restarts the run in the other mode.
-            let _ = self.bridge.stop(s.workspace());
+        let speed = speed.min(100);
+        s.speed.store(speed, Ordering::SeqCst);
+        if s.run.lock().unwrap().active.is_some() {
+            self.bridge.run_settings(
+                s.workspace(),
+                &RunSettings {
+                    speed: Some(netlogo_speed(speed)),
+                    ..RunSettings::default()
+                },
+            )?;
         }
         Ok(())
     }
 
+    /// View updates per iteration or on ticks, in place during a run.
     pub fn set_view_updates(&self, id: u64, on_ticks: bool) -> AppResult<()> {
         let s = self.get(id)?;
         s.on_ticks.store(on_ticks, Ordering::SeqCst);
+        if s.run.lock().unwrap().active.is_some() {
+            self.bridge.run_settings(
+                s.workspace(),
+                &RunSettings {
+                    view: Some(Some(Self::view_rate(&s))),
+                    ..RunSettings::default()
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    /// "Pause when" (G6): the reporter that ends a forever run when it reports true; empty
+    /// for none. A run in progress checks it from its next iteration.
+    pub fn set_pause_when(&self, id: u64, condition: &str) -> AppResult<()> {
+        let s = self.get(id)?;
+        let condition = Some(condition.trim().to_string()).filter(|c| !c.is_empty());
+        *s.pause_when.lock().unwrap() = condition.clone();
+        if s.run.lock().unwrap().active.is_some() {
+            self.bridge.run_settings(
+                s.workspace(),
+                &RunSettings {
+                    stop_when: Some(condition),
+                    ..RunSettings::default()
+                },
+            )?;
+        }
         Ok(())
     }
 
@@ -1118,37 +1142,79 @@ impl Sessions {
         Ok(s.view(true, Vec::new(), None))
     }
 
-    /// Applies edited code to the interactive workspace. Until `workspace.recompile` (G5)
-    /// exists, this saves the model and opens it again in a new workspace, which clears the
-    /// world.
+    /// What applying the edited code would remove from the world (G5): breeds whose agents
+    /// die and variables that lose their values. Changes nothing. A compile error is returned
+    /// as an error with its span.
+    pub fn apply_check(&self, id: u64) -> AppResult<RecompileResult> {
+        let s = self.get(id)?;
+        let (code, globals) = {
+            let doc = s.doc.lock().unwrap();
+            (
+                doc.nlogox.code().unwrap_or_default(),
+                interface_globals(&doc.nlogox),
+            )
+        };
+        let _ops = s.ops.lock().unwrap();
+        Ok(self
+            .bridge
+            .recompile(s.workspace(), &code, true, Some(&globals))?)
+    }
+
+    /// Installs the edited code in the interactive workspace the way NetLogo's Check button
+    /// does (G5): the world is kept. A forever run is stopped first, as NetLogo does. Globals
+    /// of widgets added since the last Apply get the widgets' values.
     pub fn apply(&self, id: u64) -> AppResult<ModelView> {
         let s = self.get(id)?;
         if s.run.lock().unwrap().active.is_some() {
-            return Err(AppError::new(
-                "Pause the model before applying code changes.",
-            ));
+            self.bridge.stop(s.workspace())?;
+            let deadline = Instant::now() + STOP_TIMEOUT;
+            while s.run.lock().unwrap().active.is_some() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
-        self.save(id)?;
+        let (code, globals, new_globals) = {
+            let doc = s.doc.lock().unwrap();
+            let globals = interface_globals(&doc.nlogox);
+            let new: Vec<String> = globals
+                .iter()
+                .filter(|g| !doc.applied_globals.contains(g))
+                .cloned()
+                .collect();
+            (doc.nlogox.code().unwrap_or_default(), globals, new)
+        };
         let _ops = s.ops.lock().unwrap();
-        let opened = self.bridge.open(&s.path)?;
-        let old = std::mem::replace(&mut *s.workspace.lock().unwrap(), opened.workspace);
-        let _ = self.bridge.dispose(old);
+        let errors = match self
+            .bridge
+            .recompile(s.workspace(), &code, false, Some(&globals))
         {
-            let mut doc = s.doc.lock().unwrap();
-            doc.applied_code = doc.nlogox.code().unwrap_or_default();
+            Ok(_) => {
+                let mut doc = s.doc.lock().unwrap();
+                doc.applied_code = code;
+                doc.applied_globals = globals;
+                Vec::new()
+            }
+            Err(ClientError::Rpc(rpc)) if rpc.code == logos_protocol::codes::COMPILER_ERROR => {
+                vec![AppError::from(ClientError::Rpc(rpc))]
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if errors.is_empty() {
+            for w in s.widgets() {
+                let Some(var) = w.data.variable() else {
+                    continue;
+                };
+                if !new_globals.contains(&var.to_ascii_lowercase()) {
+                    continue;
+                }
+                if let Some(cmd) = current_value(&w.data).and_then(|v| set_command(&w.data, &v)) {
+                    let _ = self.bridge.command(s.workspace(), &cmd);
+                }
+            }
         }
-        let errors = opened
-            .errors
-            .iter()
-            .map(|e| AppError {
-                message: e.message.clone(),
-                span: Some((e.span.start, e.span.end)),
-                detail: e.span.file.clone(),
-            })
-            .collect();
         self.snapshot(&s);
         self.refresh_monitors(&s);
-        Ok(s.view(opened.compiled, errors, opened.model_version))
+        self.send_plots(&s);
+        Ok(s.view(errors.is_empty(), errors, None))
     }
 
     /// Applies an interface edit (D-19: through span edits) and records it for undo. Returns
@@ -1337,11 +1403,10 @@ fn run_error(f: &Finished) -> AppError {
     }
 }
 
-/// The pause between iterations for a speed below full (0 is the slowest): up to about
-/// half a second, falling off quickly toward full speed.
-pub fn delay_for(speed: u64) -> Duration {
-    let slow = (100 - speed.min(100)) as f64 / 100.0;
-    Duration::from_millis((slow * slow * 500.0) as u64)
+/// The speed slider (0 to 100) as NetLogo's speed (-50 to 50, G2): 50 on the slider is
+/// NetLogo's normal speed (0), and 100 runs without pacing.
+pub fn netlogo_speed(slider: u64) -> Option<f64> {
+    (slider < 100).then_some(slider as f64 - 50.0)
 }
 
 #[cfg(test)]
@@ -1394,10 +1459,10 @@ mod tests {
     }
 
     #[test]
-    fn delays() {
-        assert_eq!(delay_for(100), Duration::ZERO);
-        assert_eq!(delay_for(0), Duration::from_millis(500));
-        assert!(delay_for(50) < delay_for(25));
+    fn speeds() {
+        assert_eq!(netlogo_speed(100), None);
+        assert_eq!(netlogo_speed(50), Some(0.0));
+        assert_eq!(netlogo_speed(0), Some(-50.0));
     }
 
     #[test]

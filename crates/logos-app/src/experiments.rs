@@ -555,145 +555,153 @@ fn run_study(
     let resume_meta = resume.as_ref().map(|r| r.meta.clone());
     let update_plots = req.settings.update_plots;
 
-    let outcome = run_experiment(
-        &bridge,
-        &source,
-        &options,
-        &|e, runs| {
-            let setup = || -> Result<Output, String> {
-                let results = match &resume_meta {
-                    Some(meta) => {
-                        meta.check(e).map_err(|e| e.to_string())?;
-                        ResultsDir::open(out_dir).map_err(|e| e.to_string())?
-                    }
-                    None => ResultsDir::create(
-                        out_dir,
-                        RunMeta {
-                            experiment: e.name.clone(),
-                            model: req.model.clone(),
-                            project: project_dir.to_path_buf(),
-                            setup_file: None,
-                            netlogo_version: netlogo_version.clone(),
-                            run_count: e.runs.len() as u64,
-                            variables: e.variables.clone(),
-                            metrics: e.metrics.clone(),
-                            update_plots,
-                            created: chrono::Local::now().to_rfc3339(),
-                            provenance: Some(provenance.clone()),
-                        },
-                    )
-                    .map_err(|e| e.to_string())?,
+    // Steps of the runs in progress come from the bridge's experiment.progress notifications
+    // (G11), so the table moves while the runs go on.
+    let finished = AtomicBool::new(false);
+    let outcome = std::thread::scope(|scope| {
+        scope.spawn(|| watch_progress(&bridge, study, &finished, notify));
+        let outcome = run_experiment(
+            &bridge,
+            &source,
+            &options,
+            &|e, runs| {
+                let setup = || -> Result<Output, String> {
+                    let results = match &resume_meta {
+                        Some(meta) => {
+                            meta.check(e).map_err(|e| e.to_string())?;
+                            ResultsDir::open(out_dir).map_err(|e| e.to_string())?
+                        }
+                        None => ResultsDir::create(
+                            out_dir,
+                            RunMeta {
+                                experiment: e.name.clone(),
+                                model: req.model.clone(),
+                                project: project_dir.to_path_buf(),
+                                setup_file: None,
+                                netlogo_version: netlogo_version.clone(),
+                                run_count: e.runs.len() as u64,
+                                variables: e.variables.clone(),
+                                metrics: e.metrics.clone(),
+                                update_plots,
+                                created: chrono::Local::now().to_rfc3339(),
+                                provenance: Some(provenance.clone()),
+                            },
+                        )
+                        .map_err(|e| e.to_string())?,
+                    };
+                    let table = results.start_table(e, &saved).map_err(|e| e.to_string())?;
+                    Ok(Output { results, table })
                 };
-                let table = results.start_table(e, &saved).map_err(|e| e.to_string())?;
-                Ok(Output { results, table })
-            };
-            match setup() {
-                Ok(o) => *output.lock().unwrap() = Some(o),
-                Err(msg) => fail(msg),
-            }
-            let mut v = study.view.lock().unwrap();
-            v.state = "running".into();
-            v.total = e.runs.len();
-            v.resumed = saved.len();
-            v.done = saved.len();
-            v.workers = options.workers.min(runs.len()).max(1);
-            v.runs = e
-                .runs
-                .iter()
-                .enumerate()
-                .map(|(i, settings)| {
-                    let n = i as u64 + 1;
-                    let prior = saved.iter().find(|r| r.run_number == n);
-                    RunRow {
-                        run: n,
-                        settings: settings
-                            .iter()
-                            .map(|s| (s.name.clone(), s.cell.text.clone()))
-                            .collect(),
-                        status: if prior.is_some() {
-                            "done".into()
-                        } else {
-                            "waiting".into()
-                        },
-                        steps: prior.map_or(0, |r| r.steps),
-                        seconds: prior.map_or(0.0, |r| r.elapsed_millis / 1000.0),
-                        worker: None,
-                        errors: Vec::new(),
-                    }
-                })
-                .collect();
-            // The runner starts runs in order on its workers; mark the first ones running.
-            let workers = v.workers;
-            for r in v
-                .runs
-                .iter_mut()
-                .filter(|r| r.status == "waiting")
-                .take(workers)
-            {
-                r.status = "running".into();
-            }
-            drop(v);
-            notify(study);
-        },
-        &|_, o| {
-            let r = &o.result;
-            let halted = r.reason == LabRunEnd::Halted;
-            if !halted && let Some(out) = output.lock().unwrap().as_mut() {
-                let ended = chrono::Local::now();
-                let started =
-                    ended - chrono::Duration::milliseconds(r.elapsed_millis.round() as i64);
-                let record = RunRecord {
-                    run_number: r.run_number,
-                    started: started.to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
-                    ended: ended.to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
-                    worker: o.worker,
-                    random_seed: r
-                        .settings
-                        .iter()
-                        .find(|s| s.name.eq_ignore_ascii_case("random-seed"))
-                        .map(|s| s.cell.text.clone()),
-                    provenance: provenance.clone(),
-                };
-                let saved = out.results.save_run(r, &record).map_err(|e| e.to_string());
-                let written = out.table.write_run(r).map_err(|e| e.to_string());
-                if let Err(e) = saved.and(written) {
-                    fail(e);
+                match setup() {
+                    Ok(o) => *output.lock().unwrap() = Some(o),
+                    Err(msg) => fail(msg),
                 }
-            }
-            let mut v = study.view.lock().unwrap();
-            if let Some(row) = v.runs.iter_mut().find(|x| x.run == r.run_number) {
-                row.status = if halted {
-                    "stopped".into()
-                } else if r.reason == LabRunEnd::Failed {
-                    "failed".into()
-                } else {
-                    "done".into()
-                };
-                row.steps = r.steps;
-                row.seconds = r.elapsed_millis / 1000.0;
-                row.worker = Some(o.worker);
-                row.errors = r
-                    .errors
+                let mut v = study.view.lock().unwrap();
+                v.state = "running".into();
+                v.total = e.runs.len();
+                v.resumed = saved.len();
+                v.done = saved.len();
+                v.workers = options.workers.min(runs.len()).max(1);
+                v.runs = e
+                    .runs
                     .iter()
-                    .map(|e| format!("{}: {}", e.kind, e.message.lines().next().unwrap_or("")))
+                    .enumerate()
+                    .map(|(i, settings)| {
+                        let n = i as u64 + 1;
+                        let prior = saved.iter().find(|r| r.run_number == n);
+                        RunRow {
+                            run: n,
+                            settings: settings
+                                .iter()
+                                .map(|s| (s.name.clone(), s.cell.text.clone()))
+                                .collect(),
+                            status: if prior.is_some() {
+                                "done".into()
+                            } else {
+                                "waiting".into()
+                            },
+                            steps: prior.map_or(0, |r| r.steps),
+                            seconds: prior.map_or(0.0, |r| r.elapsed_millis / 1000.0),
+                            worker: None,
+                            errors: Vec::new(),
+                        }
+                    })
                     .collect();
-            }
-            if !halted {
-                v.done += 1;
-                if r.reason == LabRunEnd::Failed || !r.errors.is_empty() {
-                    v.failed += 1;
+                // The runner starts runs in order on its workers; mark the first ones running.
+                let workers = v.workers;
+                for r in v
+                    .runs
+                    .iter_mut()
+                    .filter(|r| r.status == "waiting")
+                    .take(workers)
+                {
+                    r.status = "running".into();
                 }
-            }
-            // The next waiting run is now on a worker, unless the run is being stopped.
-            if !study.cancel.load(Ordering::SeqCst)
-                && let Some(next) = v.runs.iter_mut().find(|x| x.status == "waiting")
-            {
-                next.status = "running".into();
-            }
-            drop(v);
-            notify(study);
-        },
-    );
+                drop(v);
+                notify(study);
+            },
+            &|_, o| {
+                let r = &o.result;
+                let halted = r.reason == LabRunEnd::Halted;
+                if !halted && let Some(out) = output.lock().unwrap().as_mut() {
+                    let ended = chrono::Local::now();
+                    let started =
+                        ended - chrono::Duration::milliseconds(r.elapsed_millis.round() as i64);
+                    let record = RunRecord {
+                        run_number: r.run_number,
+                        started: started.to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+                        ended: ended.to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+                        worker: o.worker,
+                        random_seed: r
+                            .settings
+                            .iter()
+                            .find(|s| s.name.eq_ignore_ascii_case("random-seed"))
+                            .map(|s| s.cell.text.clone()),
+                        provenance: provenance.clone(),
+                    };
+                    let saved = out.results.save_run(r, &record).map_err(|e| e.to_string());
+                    let written = out.table.write_run(r).map_err(|e| e.to_string());
+                    if let Err(e) = saved.and(written) {
+                        fail(e);
+                    }
+                }
+                let mut v = study.view.lock().unwrap();
+                if let Some(row) = v.runs.iter_mut().find(|x| x.run == r.run_number) {
+                    row.status = if halted {
+                        "stopped".into()
+                    } else if r.reason == LabRunEnd::Failed {
+                        "failed".into()
+                    } else {
+                        "done".into()
+                    };
+                    row.steps = r.steps;
+                    row.seconds = r.elapsed_millis / 1000.0;
+                    row.worker = Some(o.worker);
+                    row.errors = r
+                        .errors
+                        .iter()
+                        .map(|e| format!("{}: {}", e.kind, e.message.lines().next().unwrap_or("")))
+                        .collect();
+                }
+                if !halted {
+                    v.done += 1;
+                    if r.reason == LabRunEnd::Failed || !r.errors.is_empty() {
+                        v.failed += 1;
+                    }
+                }
+                // The next waiting run is now on a worker, unless the run is being stopped.
+                if !study.cancel.load(Ordering::SeqCst)
+                    && let Some(next) = v.runs.iter_mut().find(|x| x.status == "waiting")
+                {
+                    next.status = "running".into();
+                }
+                drop(v);
+                notify(study);
+            },
+        );
+        finished.store(true, Ordering::SeqCst);
+        outcome
+    });
     let _ = bridge.shutdown();
     let outcome = outcome.map_err(|e| AppError::new(e.to_string()))?;
     if let Some(e) = failure.into_inner().unwrap() {
@@ -728,6 +736,41 @@ fn run_study(
         .map_err(err)?;
     study.view.lock().unwrap().parquet = Some(parquet);
     Ok("finished".into())
+}
+
+/// Shows each run's steps from `experiment.progress` until `finished` is set.
+fn watch_progress(
+    bridge: &Bridge,
+    study: &Study,
+    finished: &AtomicBool,
+    notify: &(dyn Fn(&Study) + Sync),
+) {
+    let mut last_notify = std::time::Instant::now();
+    while !finished.load(Ordering::SeqCst) {
+        let Some(n) = bridge.next_notification(std::time::Duration::from_millis(200)) else {
+            continue;
+        };
+        if n.method != "experiment.progress" {
+            continue;
+        }
+        let Ok(p) = serde_json::from_value::<logos_protocol::ExperimentProgress>(n.params) else {
+            continue;
+        };
+        {
+            let mut v = study.view.lock().unwrap();
+            if let Some(row) = v.runs.iter_mut().find(|r| r.run == p.run_number)
+                && (row.status == "running" || row.status == "waiting")
+            {
+                row.status = "running".into();
+                row.steps = p.steps;
+                row.seconds = p.elapsed_millis / 1000.0;
+            }
+        }
+        if last_notify.elapsed() >= std::time::Duration::from_millis(250) {
+            last_notify = std::time::Instant::now();
+            notify(study);
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------- results

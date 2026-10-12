@@ -14,6 +14,7 @@ import {
 import { errorText, ipc } from "./ipc";
 import { AddMenu, EditFrame, addAt, canRedo, canUndo, editMode, guides, interfaceMenu, placing, selected, undoInterface } from "./editor";
 import { hit } from "./snap";
+import { drawPens, penColor, plotData } from "./plots";
 
 /** A NetLogo color (Java ARGB integer) as CSS. */
 export function argb(c: number): string {
@@ -23,6 +24,14 @@ export function argb(c: number): string {
 
 function label(w: Widget, fallback: string): string {
   return w.display && w.display.length ? w.display : fallback;
+}
+
+/** The speed slider: 50 is NetLogo's normal speed, 100 runs without pacing (G2). */
+export function speedText(v: number): string {
+  if (v >= 100) return "full speed";
+  if (v <= 0) return "slowest";
+  if (v === 50) return "normal";
+  return v < 50 ? "slower" : "faster";
 }
 
 function ticksText(t: number | null): string {
@@ -102,9 +111,9 @@ function Toolbar() {
       <div class="group">
         <label for="speed">Speed</label>
         <input id="speed" class="speed" type="range" min={0} max={100} step={1} value={speed.value}
-          aria-valuetext={speed.value >= 100 ? "full speed" : `${speed.value} percent`}
+          aria-valuetext={speedText(speed.value)}
           onInput={(e) => setSpeed(Number((e.target as HTMLInputElement).value))} />
-        <span class="muted" style="width: 70px">{speed.value >= 100 ? "full speed" : speed.value <= 0 ? "slowest" : "slower"}</span>
+        <span class="muted" style="width: 70px">{speedText(speed.value)}</span>
       </div>
       <span class="sep" />
       <div class="group">
@@ -272,9 +281,14 @@ function InputWidget({ w, style, cls }: WProps) {
   );
 }
 
+function fmtAxis(v: number): string {
+  return Number.isInteger(v) ? String(v) : String(Number(v.toPrecision(4)));
+}
+
 function PlotWidget({ w, style, cls }: WProps) {
   const d = w.data;
   const ref = useRef<HTMLCanvasElement>(null);
+  const data = plotData.value.get(w.display ?? "");
   useEffect(() => {
     const c = ref.current;
     if (!c || d.kind !== "plot") return;
@@ -287,28 +301,39 @@ function PlotWidget({ w, style, cls }: WProps) {
     const muted = css.getPropertyValue("--text-muted").trim() || "#666";
     ctx.clearRect(0, 0, c.width, c.height);
     const l = 30, b = 16, t = 4, rr = 6;
+    const range = data ?? d;
+    // Pen colors are chosen for NetLogo's white plotting area, so it stays white in every theme.
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(l, t, c.width - l - rr, c.height - t - b);
     ctx.strokeStyle = fg;
     ctx.strokeRect(l + 0.5, t + 0.5, c.width - l - rr, c.height - t - b);
     ctx.fillStyle = muted;
     ctx.font = "10px sans-serif";
-    ctx.fillText(String(d.yMax), 2, t + 9);
-    ctx.fillText(String(d.yMin), 2, c.height - b);
-    ctx.fillText(String(d.xMin), l, c.height - 4);
-    const xm = String(d.xMax);
+    ctx.fillText(fmtAxis(range.yMax), 2, t + 9);
+    ctx.fillText(fmtAxis(range.yMin), 2, c.height - b);
+    ctx.fillText(fmtAxis(range.xMin), l, c.height - 4);
+    const xm = fmtAxis(range.xMax);
     ctx.fillText(xm, c.width - rr - ctx.measureText(xm).width, c.height - 4);
-    ctx.textAlign = "center";
-    ctx.fillText("No plot data yet", (c.width + l) / 2, (c.height - b + t) / 2 - 6);
-    ctx.fillText("(needs the plot stream, G4)", (c.width + l) / 2, (c.height - b + t) / 2 + 8);
-  }, [d, w.width, w.height]);
+    if (data) drawPens(ctx, data, l + 1, t + 1, c.width - rr, c.height - b);
+  }, [d, w.width, w.height, data]);
   if (d.kind !== "plot") return null;
   const name = label(w, "plot");
+  const described = data
+    ? data.pens.filter((p) => !p.hidden).map((p) => {
+      const last = p.points[p.points.length - 1];
+      return last ? `${p.name} ${p.points.length} points, last ${fmtAxis(last[1])}` : `${p.name} no points`;
+    }).join("; ")
+    : "no data";
+  const legendPens = data
+    ? data.pens.filter((p) => p.inLegend).map((p) => ({ name: p.name, color: penColor(p.color) }))
+    : d.pens.filter((p) => p.legend).map((p) => ({ name: p.display, color: argb(p.color) }));
   return (
-    <div class={`${cls} w-plot`} style={style} role="img" aria-label={`Plot ${name}: ${d.pens.map((p) => p.display).join(", ")}. Plot data is not shown yet.`}>
+    <div class={`${cls} w-plot`} style={style} role="img" aria-label={`Plot ${name}: ${described}.`}>
       <div class="title">{name}</div>
       <canvas ref={ref} aria-hidden="true" />
-      {d.legend && d.pens.length > 0 && (
+      {d.legend && legendPens.length > 0 && (
         <div class="legend" aria-hidden="true">
-          {d.pens.filter((p) => p.legend).map((p) => <span><i style={{ background: argb(p.color) }} />{p.display}</span>)}
+          {legendPens.map((p) => <span><i style={{ background: p.color }} />{p.name}</span>)}
         </div>
       )}
     </div>

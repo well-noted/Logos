@@ -7,8 +7,9 @@ import { checkRecovery } from "./recovery";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog, ask, message } from "@tauri-apps/plugin-dialog";
 import {
-  errorText, ipc, on, type EngineStatus, type ModelView, type OutlineEntry, type Settings, type WidgetValue,
+  errorText, ipc, on, type AppError, type EngineStatus, type Loss, type ModelView, type OutlineEntry, type Settings, type WidgetValue,
 } from "./ipc";
+import { applyPlots, clearPlots, plotData } from "./plots";
 import { applyTheme, customTheme, parseCustomTheme, resolveTheme, type Theme } from "./themes";
 
 // ---- engine and settings ------------------------------------------------------------------
@@ -82,6 +83,8 @@ export const inspected = signal<Inspected | null>(null);
 export interface Watch { reporter: string; values: number[]; text: string; ok: boolean }
 export const watches = signal<Watch[]>([]);
 export const pauseWhen = signal<string>("");
+/** Why the last run paused on its "Pause when" condition, shown under the field. */
+export const pauseNote = signal<string>("");
 
 export function inspect(target: Inspected) {
   inspected.value = target;
@@ -199,10 +202,20 @@ export async function init() {
     monitors.value = next;
     ticks.value = e.ticks;
   });
+  on("model-plots", (e) => {
+    if (e.model !== model.value?.id) return;
+    plotData.value = applyPlots(plotData.value, e.full, e.plots);
+  });
   on("model-ticks", (e) => { if (e.model === model.value?.id) ticks.value = e.ticks; });
   on("model-run", (e) => {
     if (e.model !== model.value?.id) return;
     running.value = e.running ? { button: e.button ?? null } : null;
+    if (!e.running && e.reason === "condition") {
+      const text = `Paused: "${pauseWhen.value.trim()}" became true`;
+      pauseNote.value = text;
+      addLog("info", text);
+      showToast(text);
+    }
     if (!e.running) {
       if (e.error) {
         const text = `Runtime error: ${e.error.message}${e.error.detail ? ` (${e.error.detail})` : ""}`;
@@ -275,6 +288,8 @@ export async function openModel(path: string) {
 }
 
 function loadView(view: ModelView) {
+  // The host sends the plots when the view attaches; a reload of the same model keeps them.
+  if (model.value?.id !== view.id) clearPlots();
   model.value = view;
   dirty.value = view.dirty;
   notApplied.value = false;
@@ -312,6 +327,7 @@ export async function closeModel(): Promise<boolean> {
   }
   try { await ipc.close(m.id); } catch { /* the engine may be gone */ }
   model.value = null;
+  clearPlots();
   running.value = null;
   docs.value = [];
   project.value = null;
@@ -419,29 +435,53 @@ export async function setInfo(info: string) {
   history.value = { canUndo: r.canUndo, canRedo: r.canRedo };
 }
 
-/** Apply (D-23). Until the bridge can recompile in place (G5), Logos saves the model and opens
- * it again, which clears the world, so it asks first. */
+/** A sentence for each thing applying would remove from the world. */
+export function describeLosses(losses: Loss[]): string[] {
+  const lower = (n: string) => n.toLowerCase();
+  return losses.map((l) => {
+    switch (l.kind) {
+      case "breed": return `The breed ${lower(l.name)} is gone: its ${l.agents ?? 0} turtles die.`;
+      case "linkBreed": return `The link breed ${lower(l.name)} is gone: its ${l.agents ?? 0} links die.`;
+      case "global": return `The global ${lower(l.name)} is gone, with its value.`;
+      case "breedVariable": return `${lower(l.breed ?? "")} lose the variable ${lower(l.name)}.`;
+      case "turtleVariable": return `Turtles lose the variable ${lower(l.name)}.`;
+      case "patchVariable": return `Patches lose the variable ${lower(l.name)}.`;
+      case "linkVariable": return `Links lose the variable ${lower(l.name)}.`;
+      default: return `${l.kind} ${lower(l.name)} is removed.`;
+    }
+  });
+}
+
+/** Apply (D-23, G5): installs the edited code in NetLogo the way its Check button does. The
+ * world is kept; when the new code removes breeds or variables, Logos says what is lost and
+ * asks first. A running model is stopped, as NetLogo does. */
 export async function applyCode() {
   const m = model.value;
   if (!m) return;
-  if (running.value) {
-    showToast("Pause the model before applying code changes.");
-    return;
-  }
-  if (settings.value.confirmApply !== false) {
-    const r = await confirmDialog({
-      title: "Apply code changes",
-      message: "Applying saves the model and reloads it in NetLogo. The world is cleared, as when NetLogo opens a model. (Applying without clearing the world comes with the bridge's recompile method, G5.)",
-      okLabel: "Save and apply", dontAsk: true,
-    });
-    if (!r.ok) return;
-    if (r.dontAsk) await saveSettings({ confirmApply: false });
-  }
   try {
+    let check;
+    try {
+      check = await ipc.applyCheck(m.id);
+    } catch (e) {
+      // A compile error: shown in Problems, nothing applied.
+      const err = e as AppError;
+      problems.value = [{ text: err.message ?? String(e), source: "code", span: err.span }];
+      bottomTab.value = "problems";
+      showToast("The code has errors; see Problems");
+      return;
+    }
+    if (check.losses.length > 0 && settings.value.confirmApply !== false) {
+      const r = await confirmDialog({
+        title: "Apply code changes",
+        message: `Applying keeps the world, but the new code removes some of it:\n\n${describeLosses(check.losses).join("\n")}`,
+        okLabel: "Apply", dontAsk: true,
+      });
+      if (!r.ok) return;
+      if (r.dontAsk) await saveSettings({ confirmApply: false });
+    }
     const view = await ipc.apply(m.id);
-    model.value = { ...view };
-    dirty.value = false;
-    notApplied.value = false;
+    model.value = { ...model.value!, widgets: view.widgets };
+    notApplied.value = !view.compiled;
     problems.value = view.errors.map((e) => ({ text: e.message, source: e.detail || "code", span: e.detail ? undefined : e.span }));
     addActivity("Applied code changes");
     showToast(view.compiled ? "Code applied" : "The code has errors; see Problems");
