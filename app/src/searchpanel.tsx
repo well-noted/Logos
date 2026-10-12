@@ -5,9 +5,9 @@
 
 import { signal } from "@preact/signals";
 import { useMemo, useState } from "preact/hooks";
-import { changeOpenCode, revealRange } from "./code";
+import { revealRange } from "./code";
 import { type Op, editMode, editWidget, selected } from "./editor";
-import { addActivity, model, modelTab, rightOpen, setCode, setInfo, showToast } from "./state";
+import { activeDoc, addActivity, model, modelTab, rightOpen, showToast } from "./state";
 import {
   type Match, type SearchOptions, compile, fieldText, replaceRanges, replacementFor, searchModel,
 } from "./search";
@@ -21,6 +21,7 @@ function placeName(m: Match): string {
 }
 
 function reveal(m: Match) {
+  activeDoc.value = "model";
   if (m.place.kind === "code") {
     modelTab.value = "code";
     setTimeout(() => revealRange(m.start, m.end), 60);
@@ -64,11 +65,9 @@ export function SearchPanel() {
     for (const [key, list] of groups) {
       const ranges = list.map((x) => [x.start, x.end] as [number, number]);
       if (key === "code") {
-        const text = m.code;
-        const changes = list.map((x) => ({ from: x.start, to: x.end, insert: replacementFor(text.slice(x.start, x.end), re, rep, opts) }));
-        if (!changeOpenCode(text, changes)) await setCode(replaceRanges(text, ranges, re, rep, opts));
+        ops.push({ op: "code", text: replaceRanges(m.code, ranges, re, rep, opts) });
       } else if (key === "info") {
-        await setInfo(replaceRanges(m.info, ranges, re, rep, opts));
+        ops.push({ op: "info", text: replaceRanges(m.info, ranges, re, rep, opts) });
       } else {
         const p = list[0].place;
         if (p.kind !== "widget") continue;
@@ -82,8 +81,8 @@ export function SearchPanel() {
       }
     }
     if (ops.length) {
-      // One undo step for every widget change.
-      await editWidget({ op: "batch", ops }, "Replaced text in widgets");
+      // Code, Info and widgets change together, as one undo step (I3).
+      await editWidget({ op: "batch", ops }, `Replaced "${q}"`);
     }
     addActivity(`Replaced ${chosen.length} match${chosen.length === 1 ? "" : "es"} of "${q}"`);
     showToast(`Replaced ${chosen.length} match${chosen.length === 1 ? "" : "es"}.`);

@@ -52,5 +52,9 @@ LOGOS_BRIDGE_JAR=<any existing file>
 | `src/experiments.tsx`, `src/bspace.ts` | The experiment editor, the run dashboard and results |
 | `src/panels.tsx` | Activity bar, outline, bottom panel (Command Center, Output, Problems, Log, Activity), status bar |
 | `src/settings.tsx`, `src/themes.ts` | Settings, built-in and custom themes (D-32) |
+| `src/netlogo.ts` | NetLogo names by class (from the primitive table and the model), for highlighting |
+| `src/menu.tsx`, `src/dialog.tsx` | Context menus; confirmations with "Don't ask again" |
+| `src/diff.tsx` | Comparing the model's code with the saved file, git HEAD or another model |
+| `src/snap.ts` | Shift-drag snapping in interface edit mode |
 | `src/commands.ts`, `src/palette.tsx` | Every action, keyboard shortcuts, command palette |
 | `src/state.ts`, `src/ipc.ts`, `src/frames.ts` | App state, calls into the host, view frames |

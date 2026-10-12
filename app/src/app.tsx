@@ -2,6 +2,9 @@
 // with its Interface, Info and Code tabs, the right and bottom panels, and the status bar.
 
 import { useEffect, useRef, useState } from "preact/hooks";
+import { ContextMenu, type MenuItem, isMenuKey, showContextMenu } from "./menu";
+import { DiffDoc, compareCode } from "./diff";
+import { ConfirmDialog } from "./dialog";
 import { RecoveryDialog } from "./recovery";
 import { COMMANDS, runCommand, type Command } from "./commands";
 import { Icon } from "./icons";
@@ -19,7 +22,7 @@ import { DataDoc } from "./data";
 import { frames } from "./frames";
 import { ipc } from "./ipc";
 import {
-  activeDoc, closeDoc, closeModel, dirty, docs, model, modelTab, notApplied, paletteOpen, rightOpen, settingsOpen,
+  activeDoc, closeDoc, closeModel, dirty, docs, model, modelTab, notApplied, paletteOpen, rightOpen, settingsOpen, sideDoc,
   toast, viewPopped, type Doc, type ModelTab,
 } from "./state";
 
@@ -76,7 +79,32 @@ function docTitle(d: Doc): string {
     case "experiment": return `Experiment ${d.name}`;
     case "dashboard": return `Run: ${d.name}`;
     case "data": return d.path.split("/").pop() ?? d.path;
+    case "diff": return `Compare: ${d.label}`;
   }
+}
+
+function tabMenu(e: MouseEvent | KeyboardEvent, d: Doc) {
+  const items: MenuItem[] = [];
+  const isSide = sideDoc.value === d.id;
+  const isActive = activeDoc.value === d.id;
+  if (isSide) items.push({ label: "Close the side view", run: () => { sideDoc.value = null; } });
+  else if (!isActive) items.push({ label: "Open to the side", run: () => { sideDoc.value = d.id; } });
+  else {
+    const other = docs.value.find((x) => x.id !== d.id && x.id !== sideDoc.value);
+    items.push({
+      label: "Open to the side", disabled: !other,
+      run: () => { sideDoc.value = d.id; if (other) activeDoc.value = other.id; },
+    });
+  }
+  if (sideDoc.value && !isSide) items.push({ label: "Swap sides", run: () => { const s = sideDoc.value!; sideDoc.value = activeDoc.value; activeDoc.value = s; } });
+  if (d.kind === "model") {
+    items.push("separator",
+      { label: "Compare code with the saved file", run: () => void compareCode({ kind: "saved" }) },
+      { label: "Compare code with git HEAD", run: () => void compareCode({ kind: "head" }) },
+      { label: "Compare code with another model…", run: () => void compareCode("pick") });
+  }
+  items.push("separator", { label: "Close", run: () => { if (d.kind === "model") closeModel(); else closeDoc(d.id); } });
+  showContextMenu(e, `${docTitle(d)} tab`, items);
 }
 
 function DocTabs() {
@@ -86,10 +114,14 @@ function DocTabs() {
       {docs.value.map((d) => {
         const active = activeDoc.value === d.id;
         return (
-          <div class={`doc-tab${active ? "" : " inactive"}`} role="tab" aria-selected={active} tabIndex={0}
+          <div class={`doc-tab${active ? "" : " inactive"}${sideDoc.value === d.id ? " side" : ""}`} role="tab" aria-selected={active} tabIndex={0}
             title={d.kind === "model" ? m.path : docTitle(d)}
-            onClick={() => { activeDoc.value = d.id; }}
-            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") activeDoc.value = d.id; }}>
+            onClick={() => { if (sideDoc.value === d.id) return; activeDoc.value = d.id; }}
+            onContextMenu={(e) => tabMenu(e, d)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") activeDoc.value = d.id;
+              if (isMenuKey(e)) tabMenu(e, d);
+            }}>
             {d.kind === "model" && dirty.value && <span class="dot" aria-label="unsaved changes" />}
             <span>{docTitle(d)}</span>
             <button class="icon-btn close" aria-label={`Close ${docTitle(d)}`}
@@ -119,10 +151,28 @@ function ModelDocument() {
     { id: "interface", label: "Interface" }, { id: "info", label: "Info" }, { id: "code", label: "Code" },
   ];
   const doc = docs.value.find((d) => d.id === activeDoc.value) ?? docs.value[0];
+  const side = docs.value.find((d) => d.id === sideDoc.value && d.id !== doc?.id);
   return (
     <div class="split">
       <DocTabs />
-      {doc?.kind === "model" || !doc ? (
+      <div class={side ? "doc-split" : "doc-single"}>
+        <div class="doc-pane" aria-label={doc ? docTitle(doc) : "Document"}>{doc ? <DocContent doc={doc} tabs={tabs} /> : null}</div>
+        {side && (
+          <div class="doc-pane side" aria-label={`${docTitle(side)}, beside`}>
+            <div class="side-head"><span>{docTitle(side)}</span>
+              <button class="icon-btn" aria-label="Close the side view" onClick={() => { sideDoc.value = null; }}><Icon name="close" /></button></div>
+            {side.kind === "model" && doc?.kind === "model" ? null : <DocContent doc={side} tabs={tabs} />}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DocContent({ doc, tabs }: { doc: Doc; tabs: { id: ModelTab; label: string }[] }) {
+  return (
+    <>
+      {doc.kind === "model" ? (
         <>
           <div class="subtabs" role="tablist" aria-label="Model tabs">
             {tabs.map((t) => (
@@ -141,8 +191,9 @@ function ModelDocument() {
         : doc.kind === "secrets" ? <SecretsDoc />
         : doc.kind === "experiment" ? <ExperimentDoc name={doc.name} docId={doc.id} />
         : doc.kind === "data" ? <DataDoc path={doc.path} />
+        : doc.kind === "diff" ? <DiffDoc label={doc.label} code={doc.code} />
         : <DashboardDoc runId={doc.runId} dir={doc.dir} />}
-    </div>
+    </>
   );
 }
 
@@ -175,6 +226,8 @@ export function App() {
       {paletteOpen.value && <Palette />}
       {settingsOpen.value && <SettingsDialog />}
       <RecoveryDialog />
+      <ConfirmDialog />
+      <ContextMenu />
       {toast.value && <div class="toast" role="alert">{toast.value}</div>}
     </>
   );

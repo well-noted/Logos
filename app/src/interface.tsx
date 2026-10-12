@@ -12,7 +12,8 @@ import {
   stopModel, ticks, viewOnTicks, viewPopped,
 } from "./state";
 import { errorText, ipc } from "./ipc";
-import { AddMenu, EditFrame, canRedo, canUndo, editMode, selected, undoInterface } from "./editor";
+import { AddMenu, EditFrame, addAt, canRedo, canUndo, editMode, guides, interfaceMenu, placing, selected, undoInterface } from "./editor";
+import { hit } from "./snap";
 
 /** A NetLogo color (Java ARGB integer) as CSS. */
 export function argb(c: number): string {
@@ -44,15 +45,36 @@ export function InterfaceTab() {
         </div>
       )}
       <div class="canvas-scroll">
-        <div class={`interface${editMode.value ? " editing" : ""}`} style={{ width: `${right}px`, height: `${bottom}px` }}
+        <div class={`interface${editMode.value ? " editing" : ""}${placing.value ? " placing" : ""}`} style={{ width: `${right}px`, height: `${bottom}px` }}
           role="region" aria-label={editMode.value ? "Model interface, editing" : "Model interface"}
-          onPointerDown={(e) => { if (editMode.value && e.target === e.currentTarget) selected.value = null; }}>
+          onPointerDownCapture={(e) => {
+            const kind = placing.value;
+            if (!kind || e.button !== 0) return;
+            e.preventDefault(); e.stopPropagation();
+            const p = pointIn(e);
+            void addAt(kind, p.x, p.y);
+          }}
+          onPointerDown={(e) => { if (editMode.value && e.target === e.currentTarget) selected.value = null; }}
+          onContextMenu={(e) => {
+            const p = pointIn(e);
+            interfaceMenu(e, p.x, p.y, hit(m.widgets, p.x, p.y));
+          }}
+>
           {m.widgets.map((w) => <WidgetView key={`${m.id}-${w.index}`} w={w} />)}
           {editMode.value && m.widgets.map((w) => <EditFrame key={`e-${m.id}-${w.index}`} w={w} />)}
+          {guides.value.x.map((x) => <div class="snap-guide v" style={{ left: `${x}px` }} aria-hidden="true" />)}
+          {guides.value.y.map((y) => <div class="snap-guide h" style={{ top: `${y}px` }} aria-hidden="true" />)}
         </div>
       </div>
     </div>
   );
+}
+
+/** A pointer position in the interface's own coordinates. */
+function pointIn(e: MouseEvent): { x: number; y: number } {
+  const el = (e.currentTarget as HTMLElement);
+  const r = el.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
 
 function Toolbar() {
@@ -417,10 +439,41 @@ function ViewWidget({ w, style, cls }: WProps) {
 /** The same frames in a movable panel (D-22). */
 export function PopOutView() {
   const ref = useRef<HTMLCanvasElement>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => { if (ref.current) return bindCanvas(ref.current); }, []);
+  // Drag by the title bar. The position is kept on screen.
+  const start = (e: PointerEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    const el = box.current;
+    if (!el) return;
+    e.preventDefault();
+    const r = el.getBoundingClientRect();
+    const dx = e.clientX - r.left, dy = e.clientY - r.top;
+    const head = e.currentTarget as HTMLElement;
+    head.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => {
+      const x = Math.min(Math.max(0, ev.clientX - dx), window.innerWidth - 80);
+      const y = Math.min(Math.max(0, ev.clientY - dy), window.innerHeight - 40);
+      setPos({ x, y });
+    };
+    const up = () => { head.removeEventListener("pointermove", move); head.removeEventListener("pointerup", up); };
+    head.addEventListener("pointermove", move);
+    head.addEventListener("pointerup", up);
+  };
+  const onKey = (e: KeyboardEvent) => {
+    const el = box.current;
+    if (!el) return;
+    const step = e.shiftKey ? 50 : 10;
+    const r = el.getBoundingClientRect();
+    const moves: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+    if (moves[e.key]) { e.preventDefault(); setPos({ x: Math.max(0, r.left + moves[e.key][0]), y: Math.max(0, r.top + moves[e.key][1]) }); }
+  };
   return (
-    <div class="popout" role="dialog" aria-label="View">
-      <header>
+    <div class="popout" role="dialog" aria-label="View" ref={box}
+      style={pos ? { left: `${pos.x}px`, top: `${pos.y}px`, right: "auto", bottom: "auto" } : undefined}>
+      <header onPointerDown={(e) => start(e as unknown as PointerEvent)} tabIndex={0} onKeyDown={onKey}
+        title="Drag to move; arrow keys move it too" aria-label="Move the view (arrow keys)">
         <span>View{model.value ? ` - ${model.value.name}` : ""}</span>
         <button class="icon-btn" aria-label="Close the pop-out view" onClick={() => { viewPopped.value = false; }}><Icon name="close" /></button>
       </header>

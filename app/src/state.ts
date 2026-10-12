@@ -2,6 +2,7 @@
 // call the host.
 
 import { computed, signal } from "@preact/signals";
+import { confirmDialog } from "./dialog";
 import { checkRecovery } from "./recovery";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog, ask, message } from "@tauri-apps/plugin-dialog";
@@ -20,7 +21,8 @@ export const appInfo = signal<{ version: string; dataDir: string; platform: stri
 export const theme = computed(() => resolveTheme(settings.value.theme, customThemes.value));
 
 export function refreshTheme() {
-  applyTheme(theme.value, settings.value.fontSize, settings.value.codeFontSize);
+  applyTheme(theme.value, settings.value.fontSize, settings.value.codeFontSize,
+    settings.value.fontFamily as string | undefined, settings.value.codeFontFamily as string | undefined);
 }
 
 export async function saveSettings(patch: Partial<Settings>) {
@@ -46,10 +48,26 @@ export interface ActivityEntry { time: number; actor: string; text: string }
 export const model = signal<ModelView | null>(null);
 export const dirty = signal(false);
 export const notApplied = signal(false);
+/** Whether the model's undo history (code, Info, interface, experiments) has steps. */
+export const history = signal({ canUndo: false, canRedo: false });
 export const running = signal<{ button: number | null } | null>(null);
 export const ticks = signal<number | null>(null);
 export const monitors = signal<Record<number, { text: string; error: boolean }>>({});
+/** What the model printed to the Output widget (output-print and the like). */
 export const output = signal<string>("");
+/** The Command Center's log: commands typed, what print and show wrote, and errors. */
+export interface CcLine { kind: "input" | "output" | "error"; text: string; agents?: string }
+export const ccLines = signal<CcLine[]>([]);
+function addCc(line: CcLine) {
+  const lines = ccLines.value;
+  const last = lines[lines.length - 1];
+  // Consecutive printed text joins one block.
+  if (line.kind === "output" && last?.kind === "output") {
+    ccLines.value = [...lines.slice(0, -1), { ...last, text: last.text + line.text }];
+  } else {
+    ccLines.value = [...lines, line].slice(-2000);
+  }
+}
 export interface Problem { text: string; source: string; span?: [number, number] }
 export const problems = signal<Problem[]>([]);
 export const log = signal<LogLine[]>([]);
@@ -80,10 +98,13 @@ export type Doc =
   | { id: "secrets"; kind: "secrets" }
   | { id: string; kind: "experiment"; name: string }
   | { id: string; kind: "data"; path: string }
+  | { id: string; kind: "diff"; label: string; code: string }
   | { id: string; kind: "dashboard"; runId: number; name: string; dir?: string };
 
 export const docs = signal<Doc[]>([]);
 export const activeDoc = signal<string>("model");
+/** A second document shown beside the active one (one split, design 2.2). */
+export const sideDoc = signal<string | null>(null);
 
 export function openDoc(doc: Doc) {
   if (!docs.value.some((d) => d.id === doc.id)) docs.value = [...docs.value, doc];
@@ -94,6 +115,7 @@ export function closeDoc(id: string) {
   if (id === "model") return;
   docs.value = docs.value.filter((d) => d.id !== id);
   if (activeDoc.value === id) activeDoc.value = "model";
+  if (sideDoc.value === id) sideDoc.value = null;
 }
 
 // ---- project ------------------------------------------------------------------------------
@@ -167,7 +189,8 @@ export async function init() {
   on("engine", (s) => { engine.value = s; addLog(s.state === "failed" ? "error" : "info", `Engine: ${s.state}${s.error ? ` (${s.error})` : ""}`); });
   on("model-output", (e) => {
     if (e.model !== model.value?.id) return;
-    output.value = (output.value + e.text).slice(-200_000);
+    if (e.outputArea) output.value = (output.value + e.text).slice(-200_000);
+    else addCc({ kind: "output", text: e.text });
   });
   on("model-monitors", (e) => {
     if (e.model !== model.value?.id) return;
@@ -258,6 +281,7 @@ function loadView(view: ModelView) {
   running.value = null;
   monitors.value = {};
   output.value = "";
+  ccLines.value = [];
   ticks.value = null;
   problems.value = view.errors.map((e) => ({ text: e.message, source: e.detail || "code", span: e.detail ? undefined : e.span }));
   if (!view.compiled) {
@@ -347,13 +371,13 @@ export async function setWidgetValue(index: number, value: WidgetValue) {
 export async function runCommand(source: string, agents: string) {
   const m = model.value;
   if (!m || !source.trim()) return;
-  output.value += `${agents}> ${source}\n`;
+  addCc({ kind: "input", text: source, agents });
   try {
     await ipc.command(m.id, source, agents);
     addActivity(`Ran ${agents === "observer" ? "" : agents + " "}command: ${source}`);
   } catch (e) {
     const t = errorText(e);
-    output.value += `ERROR: ${t}\n`;
+    addCc({ kind: "error", text: t });
     addLog("error", t);
   }
 }
@@ -383,13 +407,16 @@ export async function setCode(code: string) {
   const r = await ipc.setCode(m.id, code);
   dirty.value = r.dirty;
   notApplied.value = r.notApplied;
+  history.value = { canUndo: r.canUndo, canRedo: r.canRedo };
 }
 
 export async function setInfo(info: string) {
   const m = model.value;
   if (!m) return;
   model.value = { ...m, info };
-  dirty.value = await ipc.setInfo(m.id, info);
+  const r = await ipc.setInfo(m.id, info);
+  dirty.value = r.dirty;
+  history.value = { canUndo: r.canUndo, canRedo: r.canRedo };
 }
 
 /** Apply (D-23). Until the bridge can recompile in place (G5), Logos saves the model and opens
@@ -401,11 +428,15 @@ export async function applyCode() {
     showToast("Pause the model before applying code changes.");
     return;
   }
-  const ok = await ask(
-    "Applying saves the model and reloads it in NetLogo. The world is cleared, as when NetLogo opens a model. (Applying without clearing the world comes with the bridge's recompile method, G5.)",
-    { title: "Apply code changes", kind: "info", okLabel: "Save and apply", cancelLabel: "Cancel" },
-  );
-  if (!ok) return;
+  if (settings.value.confirmApply !== false) {
+    const r = await confirmDialog({
+      title: "Apply code changes",
+      message: "Applying saves the model and reloads it in NetLogo. The world is cleared, as when NetLogo opens a model. (Applying without clearing the world comes with the bridge's recompile method, G5.)",
+      okLabel: "Save and apply", dontAsk: true,
+    });
+    if (!r.ok) return;
+    if (r.dontAsk) await saveSettings({ confirmApply: false });
+  }
   try {
     const view = await ipc.apply(m.id);
     model.value = { ...view };

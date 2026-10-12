@@ -325,9 +325,14 @@ def handle(msg):
                 ws.setup()
             if re.search(r"\bgo\b", low):
                 ws.go()
-            m = re.match(r"(print|show|type|write)\s+(.*)", line.strip())
+            m = re.match(r"(output-)?(print|show|type|write)\s+(.*)", line.strip())
             if m:
-                notify("workspace.output", {"workspace": ws.id, "text": m.group(2) + "\n"})
+                value, err = ws.report(m.group(3))
+                text = m.group(3) if err or value is None else (
+                    int(value) if isinstance(value, float) and value.is_integer() else value)
+                prefix = "observer: " if m.group(2) == "show" else ""
+                notify("workspace.output", {"workspace": ws.id, "text": f"{prefix}{text}\n",
+                                            "outputArea": bool(m.group(1))})
             if low == "error":
                 return reply(id_, error={"code": 1001, "message": "Nothing named ERROR has been defined.", "data": {"span": {"start": 0, "end": 5, "file": None}}})
         return reply(id_, {})
@@ -368,6 +373,29 @@ def handle(msg):
         return reply(id_, {})
     if method == "workspace.program":
         return reply(id_, {"globals": [], "interfaceGlobals": [], "turtlesOwn": [], "patchesOwn": [], "linksOwn": [], "breeds": [], "procedures": []})
+    if method == "engine.primitives":
+        # A few names of each class, so highlighting can be seen; not NetLogo's table.
+        def prim(name, kind):
+            return {"name": name, "kind": kind, "left": None, "args": [], "returns": None,
+                    "defaultArgCount": 0, "minimumArgCount": 0, "variadic": False, "precedence": 0,
+                    "isRightAssociative": False, "agentClass": "OTPL", "blockAgentClass": None,
+                    "introducesContext": False, "canBeConcise": False, "extension": None}
+        cmds = ["show", "print", "ask", "set", "let", "create-turtles", "crt", "clear-all", "ca",
+                "reset-ticks", "tick", "if", "ifelse", "foreach", "repeat", "while", "die", "move-to",
+                "fd", "rt", "lt", "setxy", "hatch", "report", "stop", "file-open", "file-close"]
+        reps = ["count", "of", "with", "one-of", "random", "random-float", "mean", "max", "min",
+                "sum", "item", "length", "list", "patch", "turtles", "patches", "links", "ticks",
+                "any?", "neighbors", "distance", "and", "or", "not", "file-read", "round"]
+        breed = [dict(prim("create-<breeds>", "command"), breedKind="turtle"),
+                 dict(prim("<breeds>-here", "reporter"), breedKind="turtle")]
+        return reply(id_, {"netlogoVersion": "NetLogo 7.0.4 (mock)",
+                           "primitives": [prim(c, "command") for c in cmds] + [prim(r, "reporter") for r in reps],
+                           "agentVariables": {"observer": [], "patch": [{"name": "PCOLOR", "type": {"name": "number", "mask": 1}}],
+                                              "turtle": [{"name": n, "type": {"name": "number", "mask": 1}} for n in ("XCOR", "YCOR", "COLOR", "SIZE", "WHO")],
+                                              "link": []},
+                           "constants": [{"name": n, "value": True} for n in ("true", "false", "nobody", "red", "green", "blue")],
+                           "keywords": ["to", "to-report", "end", "globals", "breed", "turtles-own", "patches-own", "extensions"],
+                           "breedPrimitives": breed, "typeMasks": {}})
     if method == "workspace.check":
         return reply(id_, {"errors": []})
     return reply(id_, error={"code": -32601, "message": f"the mock bridge has no {method}"})

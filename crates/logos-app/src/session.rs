@@ -165,9 +165,9 @@ struct Doc {
     saved_text: String,
     /// The code the interactive workspace was last compiled with.
     applied_code: String,
-    /// File texts before each interface edit, for undo; most recent last.
-    undo: Vec<String>,
-    redo: Vec<String>,
+    /// File texts before each edit (code, info, interface, experiments), for one undo history
+    /// per model (I3); most recent last.
+    history: crate::history::History,
     /// The file's modification time and size when it was last read or written, to notice
     /// changes made by other programs.
     disk: Option<(SystemTime, u64)>,
@@ -493,7 +493,11 @@ impl Sessions {
             "workspace.output" => {
                 if let Some(s) = session {
                     let text = p.get("text").and_then(Json::as_str).unwrap_or_default();
-                    (self.emit)("model-output", json!({ "model": s.id, "text": text }));
+                    let area = p.get("outputArea").and_then(Json::as_bool).unwrap_or(false);
+                    (self.emit)(
+                        "model-output",
+                        json!({ "model": s.id, "text": text, "outputArea": area }),
+                    );
                 }
             }
             "run.observed" => {
@@ -620,8 +624,7 @@ impl Sessions {
                 nlogox,
                 saved_text: text,
                 applied_code,
-                undo: Vec::new(),
-                redo: Vec::new(),
+                history: Default::default(),
                 disk: disk_stamp(path),
             }),
             frames: Mutex::new(None),
@@ -966,25 +969,44 @@ impl Sessions {
     // ---------------------------------------------------------------------- the document
 
     pub fn set_code(&self, id: u64, code: &str) -> AppResult<bool> {
-        let s = self.get(id)?;
-        s.doc
-            .lock()
-            .unwrap()
-            .nlogox
-            .set_code(code)
-            .map_err(|e| AppError::new(e.to_string()))?;
-        Ok(s.is_dirty())
+        self.set_text(id, "code", code)
     }
 
     pub fn set_info(&self, id: u64, info: &str) -> AppResult<bool> {
+        self.set_text(id, "info", info)
+    }
+
+    /// Sets the code or info text, recording an undo step unless this continues typing of
+    /// the same kind.
+    fn set_text(&self, id: u64, kind: &'static str, value: &str) -> AppResult<bool> {
         let s = self.get(id)?;
-        s.doc
-            .lock()
-            .unwrap()
-            .nlogox
-            .set_info(info)
-            .map_err(|e| AppError::new(e.to_string()))?;
+        {
+            let mut doc = s.doc.lock().unwrap();
+            let current = if kind == "code" {
+                doc.nlogox.code()
+            } else {
+                doc.nlogox.info()
+            }
+            .unwrap_or_default();
+            if current != value {
+                let before = doc.nlogox.text().to_string();
+                let r = if kind == "code" {
+                    doc.nlogox.set_code(value)
+                } else {
+                    doc.nlogox.set_info(value)
+                };
+                r.map_err(|e| AppError::new(e.to_string()))?;
+                doc.history.record(before, Some(kind), Instant::now());
+            }
+        }
         Ok(s.is_dirty())
+    }
+
+    /// Whether the model has steps to undo and redo.
+    pub fn history(&self, id: u64) -> AppResult<(bool, bool)> {
+        let s = self.get(id)?;
+        let doc = s.doc.lock().unwrap();
+        Ok((doc.history.can_undo(), doc.history.can_redo()))
     }
 
     pub fn save(&self, id: u64) -> AppResult<()> {
@@ -1044,8 +1066,7 @@ impl Sessions {
                     Ok(n) => {
                         doc.nlogox = n;
                         doc.saved_text = text;
-                        doc.undo.clear();
-                        doc.redo.clear();
+                        doc.history.clear();
                     }
                     // Half-written by the other program, perhaps; look again next time.
                     Err(_) => {
@@ -1074,8 +1095,7 @@ impl Sessions {
             doc.nlogox = n;
             doc.saved_text = text;
             doc.disk = disk_stamp(&s.path);
-            doc.undo.clear();
-            doc.redo.clear();
+            doc.history.clear();
         }
         Ok(s.view(true, Vec::new(), None))
     }
@@ -1086,10 +1106,9 @@ impl Sessions {
         let n = Nlogox::parse(text).map_err(|e| AppError::new(e.to_string()))?;
         {
             let mut doc = s.doc.lock().unwrap();
-            // Undo keeps the code as the editor has it, so it can't undo a restore; start a
-            // new history instead.
-            doc.undo.clear();
-            doc.redo.clear();
+            // Restoring is one step that undo takes back.
+            let before = doc.nlogox.text().to_string();
+            doc.history.record(before, None, Instant::now());
             doc.nlogox = n;
         }
         Ok(s.view(true, Vec::new(), None))
@@ -1148,11 +1167,7 @@ impl Sessions {
             return Err(AppError::new(e));
         }
         if doc.nlogox.text() != before {
-            doc.undo.push(before);
-            if doc.undo.len() > 200 {
-                doc.undo.remove(0);
-            }
-            doc.redo.clear();
+            doc.history.record(before, None, Instant::now());
         }
         Ok(widget_edit(&doc, globals_before))
     }
@@ -1162,21 +1177,15 @@ impl Sessions {
         let s = self.get(id)?;
         let mut doc = s.doc.lock().unwrap();
         let globals_before = interface_globals(&doc.nlogox);
-        let next = if redo { doc.redo.pop() } else { doc.undo.pop() };
-        let Some(text) = next else {
-            return Ok(widget_edit(&doc, globals_before));
-        };
         let current = doc.nlogox.text().to_string();
-        // Keep the code as it is in the editor; undo covers the interface.
-        let code = doc.nlogox.code().unwrap_or_default();
-        let mut n = Nlogox::parse(text).map_err(|e| AppError::new(e.to_string()))?;
-        n.set_code(&code)
-            .map_err(|e| AppError::new(e.to_string()))?;
-        doc.nlogox = n;
-        if redo {
-            doc.undo.push(current);
+        let next = if redo {
+            doc.history.redo(current)
         } else {
-            doc.redo.push(current);
+            doc.history.undo(current)
+        };
+        if let Some(text) = next {
+            // The whole file goes back: code, info, widgets and experiments (one history, I3).
+            doc.nlogox = Nlogox::parse(text).map_err(|e| AppError::new(e.to_string()))?;
         }
         Ok(widget_edit(&doc, globals_before))
     }
@@ -1237,6 +1246,9 @@ pub struct WidgetEdit {
     pub globals_changed: bool,
     pub can_undo: bool,
     pub can_redo: bool,
+    /// The code and info after the edit, so the editors can follow an undo.
+    pub code: String,
+    pub info: String,
 }
 
 fn interface_globals(n: &Nlogox) -> Vec<String> {
@@ -1254,8 +1266,10 @@ fn widget_edit(doc: &Doc, globals_before: Vec<String>) -> WidgetEdit {
         widgets: doc.nlogox.typed_widgets(),
         dirty: doc.nlogox.text() != doc.saved_text,
         globals_changed: interface_globals(&doc.nlogox) != globals_before,
-        can_undo: !doc.undo.is_empty(),
-        can_redo: !doc.redo.is_empty(),
+        can_undo: doc.history.can_undo(),
+        can_redo: doc.history.can_redo(),
+        code: doc.nlogox.code().unwrap_or_default(),
+        info: doc.nlogox.info().unwrap_or_default(),
     }
 }
 

@@ -31,6 +31,12 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// A file as committed at HEAD, for comparing. `dir` is the file's folder and `name` its name
+/// there.
+pub fn file_at_head(dir: &Path, name: &str) -> Option<String> {
+    git(dir, &["show", &format!("HEAD:./{name}")])
+}
+
 /// The status of the repository containing `dir`, if it is in one.
 pub fn status(dir: &Path) -> Option<GitStatus> {
     // symbolic-ref also works on a branch with no commits yet; it fails when HEAD is detached.

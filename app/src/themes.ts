@@ -11,6 +11,7 @@ export const TOKEN_NAMES = [
   "widgetBg", "widgetText", "buttonBg", "buttonText", "buttonActive", "buttonActiveText",
   "gridDot", "codeBg", "codeText", "codeGutter",
   "synKeyword", "synComment", "synString", "synNumber", "synProcedure", "synBracket",
+  "synCommand", "synReporter", "synVariable",
   "selection",
 ] as const;
 
@@ -38,7 +39,8 @@ export const TOKEN_LABELS: Record<TokenName, string> = {
   buttonText: "Model button text", buttonActive: "Running button", buttonActiveText: "Running button text",
   gridDot: "Interface grid", codeBg: "Code background", codeText: "Code text", codeGutter: "Line numbers",
   synKeyword: "Keywords", synComment: "Comments", synString: "Strings", synNumber: "Numbers",
-  synProcedure: "Procedure names", synBracket: "Brackets", selection: "Text selection",
+  synProcedure: "Procedure names", synBracket: "Brackets", synCommand: "Command primitives",
+  synReporter: "Reporter primitives", synVariable: "Variables and breeds", selection: "Text selection",
 };
 
 /** Pairs that must be readable: [foreground, background, minimum ratio]. WCAG 2.2 AA asks
@@ -54,6 +56,7 @@ export const CONTRAST_PAIRS: [TokenName, TokenName, number][] = [
   ["codeText", "codeBg", 4.5], ["codeGutter", "codeBg", 4.5],
   ["synKeyword", "codeBg", 4.5], ["synComment", "codeBg", 4.5], ["synString", "codeBg", 4.5],
   ["synNumber", "codeBg", 4.5], ["synProcedure", "codeBg", 4.5], ["synBracket", "codeBg", 4.5],
+  ["synCommand", "codeBg", 4.5], ["synReporter", "codeBg", 4.5], ["synVariable", "codeBg", 4.5],
   ["controlBorder", "bgPanel", 3], ["controlBorder", "widgetBg", 3],
   ["focus", "bgPanel", 3], ["focus", "bgSide", 3], ["focus", "codeBg", 3], ["focus", "widgetBg", 3],
 ];
@@ -67,8 +70,9 @@ const light: Tokens = {
   widgetBg: "#ffffff", widgetText: "#1c1c1c", buttonBg: "#e3e3df", buttonText: "#1c1c1c",
   buttonActive: "#2b2b2b", buttonActiveText: "#ffffff",
   gridDot: "#cfcfca", codeBg: "#ffffff", codeText: "#1c1c1c", codeGutter: "#6b6b65",
-  synKeyword: "#7a2e8f", synComment: "#5f6b5f", synString: "#a3381f", synNumber: "#1f5c99",
-  synProcedure: "#0b5f63", synBracket: "#4a4a45", selection: "#cfdcf2",
+  synKeyword: "#7a2e8f", synComment: "#5f6b5f", synString: "#a3381f", synNumber: "#8a4b00",
+  synProcedure: "#0b5f63", synBracket: "#4a4a45", synCommand: "#1d4f91", synReporter: "#2d6a1f",
+  synVariable: "#9c2f6a", selection: "#bcd0f0",
 };
 
 const dark: Tokens = {
@@ -80,8 +84,9 @@ const dark: Tokens = {
   widgetBg: "#2f3034", widgetText: "#e6e6e3", buttonBg: "#3b3d42", buttonText: "#f0f0ec",
   buttonActive: "#e6e6e3", buttonActiveText: "#1e1f22",
   gridDot: "#3c3e43", codeBg: "#1e1f22", codeText: "#e3e3df", codeGutter: "#8d8d88",
-  synKeyword: "#d7a6ff", synComment: "#98a898", synString: "#f2a487", synNumber: "#8cc4ff",
-  synProcedure: "#6fd3cf", synBracket: "#b9b9b4", selection: "#3a4a66",
+  synKeyword: "#d7a6ff", synComment: "#98a898", synString: "#f2a487", synNumber: "#f0c674",
+  synProcedure: "#6fd3cf", synBracket: "#b9b9b4", synCommand: "#82b1ff", synReporter: "#a5d98a",
+  synVariable: "#f0a6c8", selection: "#2f5590",
 };
 
 const hcLight: Tokens = {
@@ -93,8 +98,9 @@ const hcLight: Tokens = {
   widgetBg: "#ffffff", widgetText: "#000000", buttonBg: "#ffffff", buttonText: "#000000",
   buttonActive: "#000000", buttonActiveText: "#ffffff",
   gridDot: "#9a9a9a", codeBg: "#ffffff", codeText: "#000000", codeGutter: "#2a2a2a",
-  synKeyword: "#5a0080", synComment: "#2f4a2f", synString: "#8a1a00", synNumber: "#00408a",
-  synProcedure: "#004a4d", synBracket: "#000000", selection: "#b8d0ff",
+  synKeyword: "#5a0080", synComment: "#2f4a2f", synString: "#8a1a00", synNumber: "#6a3a00",
+  synProcedure: "#004a4d", synBracket: "#000000", synCommand: "#00308a", synReporter: "#1f4a00",
+  synVariable: "#5a1a45", selection: "#b8d0ff",
 };
 
 const hcDark: Tokens = {
@@ -106,8 +112,9 @@ const hcDark: Tokens = {
   widgetBg: "#000000", widgetText: "#ffffff", buttonBg: "#000000", buttonText: "#ffffff",
   buttonActive: "#ffffff", buttonActiveText: "#000000",
   gridDot: "#5a5a5a", codeBg: "#000000", codeText: "#ffffff", codeGutter: "#e0e0e0",
-  synKeyword: "#e6b3ff", synComment: "#b8e0b8", synString: "#ffc2a8", synNumber: "#a8d4ff",
-  synProcedure: "#8ff0ec", synBracket: "#ffffff", selection: "#1f4a99",
+  synKeyword: "#e6b3ff", synComment: "#b8e0b8", synString: "#ffc2a8", synNumber: "#ffe08a",
+  synProcedure: "#8ff0ec", synBracket: "#ffffff", synCommand: "#9cc3ff", synReporter: "#b8f0a0",
+  synVariable: "#ffb8dc", selection: "#1f4a99",
 };
 
 const classic: Tokens = {
@@ -215,11 +222,21 @@ function cssName(t: TokenName): string {
 }
 
 /** Sets a theme's tokens as CSS variables on the document. */
-export function applyTheme(theme: Theme, fontSize: number, codeFontSize: number) {
+/** A font family name as a CSS value, with the bundled font as the fallback. */
+export function fontStack(family: string | undefined | null, fallback: string): string {
+  if (!family) return fallback;
+  return `"${family.replace(/["\\]/g, "")}", ${fallback}`;
+}
+
+export const SANS = '"IBM Plex Sans", system-ui, sans-serif';
+export const MONO = '"IBM Plex Mono", ui-monospace, monospace';
+
+/** `font` and `codeFont` (family names chosen in Settings) take precedence over the theme's. */
+export function applyTheme(theme: Theme, fontSize: number, codeFontSize: number, font?: string | null, codeFont?: string | null) {
   const root = document.documentElement;
   for (const name of TOKEN_NAMES) root.style.setProperty(cssName(name), theme.tokens[name]);
-  root.style.setProperty("--font", theme.font || '"IBM Plex Sans", system-ui, sans-serif');
-  root.style.setProperty("--code-font", theme.codeFont || '"IBM Plex Mono", ui-monospace, monospace');
+  root.style.setProperty("--font", font ? fontStack(font, SANS) : theme.font || SANS);
+  root.style.setProperty("--code-font", codeFont ? fontStack(codeFont, MONO) : theme.codeFont || MONO);
   root.style.setProperty("--font-size", `${fontSize || 13}px`);
   root.style.setProperty("--code-font-size", `${codeFontSize || 13}px`);
   root.dataset.theme = theme.id;

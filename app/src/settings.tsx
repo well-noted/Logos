@@ -65,6 +65,20 @@ export function SettingsDialog() {
             </div>
           </section>
           {editing && <ThemeEditor file={editing} onDone={() => setEditing(null)} />}
+          <section aria-labelledby="family-h">
+            <h3 id="family-h" style="margin: 0 0 8px">Fonts</h3>
+            <div class="font-pickers">
+              <FontPicker label="Interface font" value={(s.fontFamily as string) || ""}
+                onChange={(f) => saveSettings({ fontFamily: f || null })} />
+              <FontPicker label="Code font" monoFirst value={(s.codeFontFamily as string) || ""}
+                onChange={(f) => saveSettings({ codeFontFamily: f || null })} />
+            </div>
+          </section>
+          <section aria-labelledby="confirm-h">
+            <h3 id="confirm-h" style="margin: 0 0 8px">Confirmations</h3>
+            <label><input type="checkbox" checked={s.confirmApply !== false}
+              onChange={(e) => saveSettings({ confirmApply: (e.target as HTMLInputElement).checked })} /> Ask before Apply saves and reloads the model</label>
+          </section>
           <section aria-labelledby="fonts-h">
             <h3 id="fonts-h" style="margin: 0 0 8px">Text size</h3>
             <div class="actions">
@@ -107,7 +121,8 @@ function ThemeEditor({ file, onDone }: { file: CustomThemeFile; onDone: () => vo
   const preview = customTheme(draft);
   const problems = contrastProblems(preview.tokens);
   // Live preview: the whole window shows the draft while the editor is open.
-  useEffect(() => { applyTheme(preview, settings.value.fontSize, settings.value.codeFontSize); }, [JSON.stringify(draft)]);
+  useEffect(() => { applyTheme(preview, settings.value.fontSize, settings.value.codeFontSize,
+    settings.value.fontFamily as string | undefined, settings.value.codeFontFamily as string | undefined); }, [JSON.stringify(draft)]);
   useEffect(() => () => refreshTheme(), []);
   const set = (name: TokenName, value: string) => setDraft({ ...draft, tokens: { ...draft.tokens, [name]: value } });
   const save = async () => {
@@ -178,5 +193,51 @@ function ThemeEditor({ file, onDone }: { file: CustomThemeFile; onDone: () => vo
         <button class="btn" onClick={onDone}>Cancel</button>
       </div>
     </section>
+  );
+}
+
+interface FontFamily { family: string; monospace: boolean }
+let fontCache: FontFamily[] | null = null;
+
+/** A searchable list of the fonts installed on the computer, each shown in its own font. */
+function FontPicker({ label, value, onChange, monoFirst }: { label: string; value: string; onChange: (f: string) => void; monoFirst?: boolean }) {
+  const [fonts, setFonts] = useState<FontFamily[] | null>(fontCache);
+  const [filter, setFilter] = useState("");
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (fontCache) return;
+    invoke<FontFamily[]>("system_fonts").then((f) => { fontCache = f; setFonts(f); }).catch(() => setFonts([]));
+  }, []);
+  const list = (fonts ?? [])
+    .filter((f) => !filter || f.family.toLowerCase().includes(filter.toLowerCase()))
+    .sort((a, b) => (monoFirst ? Number(b.monospace) - Number(a.monospace) : 0) || a.family.localeCompare(b.family));
+  const id = label.replace(/\W+/g, "-").toLowerCase();
+  return (
+    <div class="font-picker">
+      <label for={`${id}-btn`}>{label}</label>
+      <button id={`${id}-btn`} class="btn font-current" aria-haspopup="listbox" aria-expanded={open}
+        style={value ? { fontFamily: `"${value}"` } : undefined} onClick={() => setOpen(!open)}>
+        {value || "Theme default (IBM Plex)"}
+      </button>
+      {open && (
+        <div class="font-pop">
+          <input type="text" placeholder="Filter fonts" aria-label={`Filter ${label.toLowerCase()} list`} value={filter} autoFocus
+            onInput={(e) => setFilter((e.target as HTMLInputElement).value)}
+            onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }} />
+          <ul role="listbox" aria-label={label}>
+            <li role="option" aria-selected={!value}><button onClick={() => { onChange(""); setOpen(false); }}>Theme default (IBM Plex)</button></li>
+            {fonts === null && <li class="muted">Reading the installed fonts…</li>}
+            {list.slice(0, 400).map((f) => (
+              <li role="option" aria-selected={f.family === value}>
+                <button style={{ fontFamily: `"${f.family}"` }} onClick={() => { onChange(f.family); setOpen(false); }}>
+                  {f.family} <span class="sample">to go ask turtles [ fd 1 ] 0123</span>
+                  {f.monospace && <span class="tag">monospace</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
