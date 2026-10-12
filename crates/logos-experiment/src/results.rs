@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! experiment.json     what was run: experiment, model, setup file, engine, number of runs
-//! runs/000001.json    one file per finished run, as the bridge reported it
+//! runs/000001.json    one file per finished run: its run record and the bridge's result
 //! table.csv           BehaviorSpace table output, written as runs finish
 //! results.parquet     all measurements, written when every run has finished
 //! ```
@@ -19,6 +19,7 @@ use logos_bridge_client::protocol::{LabRunEnd, LabRunResult, LoadedExperiment};
 use serde::{Deserialize, Serialize};
 
 use crate::parquet::{FileInfo, ParquetError, write_parquet};
+use crate::provenance::{Provenance, RunRecord};
 use crate::table::TableWriter;
 
 pub const EXPERIMENT_FILE: &str = "experiment.json";
@@ -67,6 +68,9 @@ pub struct RunMeta {
     pub update_plots: bool,
     /// When the folder was created (local time, RFC 3339).
     pub created: String,
+    /// The engine and files the experiment started with (E3).
+    #[serde(default)]
+    pub provenance: Option<Provenance>,
 }
 
 impl RunMeta {
@@ -96,6 +100,13 @@ impl RunMeta {
             )))
         }
     }
+}
+
+/// A saved run: the bridge's result and, for runs saved since run records exist, the record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedRun {
+    pub result: LabRunResult,
+    pub record: Option<RunRecord>,
 }
 
 pub struct ResultsDir {
@@ -147,19 +158,25 @@ impl ResultsDir {
             .join(format!("{run_number:06}.json"))
     }
 
-    /// Saves a finished run. Halted runs are not saved.
-    pub fn save_run(&self, run: &LabRunResult) -> Result<bool, ResultsError> {
+    /// Saves a finished run with its record. Halted runs are not saved.
+    pub fn save_run(&self, run: &LabRunResult, record: &RunRecord) -> Result<bool, ResultsError> {
         if run.reason == LabRunEnd::Halted {
             return Ok(false);
         }
         let path = self.run_file(run.run_number);
-        let text = serde_json::to_vec(&run.raw).expect("JSON serializes");
+        let file = serde_json::json!({ "record": record, "result": run.raw });
+        let text = serde_json::to_vec_pretty(&file).expect("JSON serializes");
         write_whole(&path, &text)?;
         Ok(true)
     }
 
     /// The runs saved so far, in run-number order.
     pub fn saved_runs(&self) -> Result<Vec<LabRunResult>, ResultsError> {
+        Ok(self.saved()?.into_iter().map(|s| s.result).collect())
+    }
+
+    /// The runs saved so far with their records, in run-number order.
+    pub fn saved(&self) -> Result<Vec<SavedRun>, ResultsError> {
         let runs_dir = self.dir.join(RUNS_DIR);
         let mut out = Vec::new();
         for entry in std::fs::read_dir(&runs_dir).map_err(io(&runs_dir))? {
@@ -174,10 +191,22 @@ impl ResultsDir {
             };
             let json: serde_json::Value =
                 serde_json::from_str(&text).map_err(|e| format(e.to_string()))?;
-            let run = LabRunResult::from_json(&json).map_err(|e| format(e.to_string()))?;
-            out.push(run);
+            let record = match json.get("record") {
+                Some(r) => Some(
+                    serde_json::from_value::<RunRecord>(r.clone())
+                        .map_err(|e| format(e.to_string()))?,
+                ),
+                None => None,
+            };
+            // Files written before run records existed hold only the result.
+            let result = json.get("result").unwrap_or(&json);
+            let run = LabRunResult::from_json(result).map_err(|e| format(e.to_string()))?;
+            out.push(SavedRun {
+                result: run,
+                record,
+            });
         }
-        out.sort_by_key(|r| r.run_number);
+        out.sort_by_key(|r| r.result.run_number);
         Ok(out)
     }
 
@@ -275,6 +304,7 @@ mod tests {
             metrics: vec!["n".into()],
             update_plots: false,
             created: "2026-10-11T09:00:00-07:00".into(),
+            provenance: None,
         }
     }
 
@@ -291,13 +321,34 @@ mod tests {
         .unwrap()
     }
 
+    fn record(n: u64) -> RunRecord {
+        RunRecord {
+            run_number: n,
+            started: "2026-10-11T09:00:00-07:00".into(),
+            ended: "2026-10-11T09:00:01-07:00".into(),
+            worker: 0,
+            random_seed: None,
+            provenance: Provenance {
+                logos_version: "0.0.0".into(),
+                netlogo_version: "7.0.4".into(),
+                bridge_version: "0.0.0".into(),
+                java_version: "17".into(),
+                java_vendor: "x".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+                files: Vec::new(),
+                secrets: Vec::new(),
+            },
+        }
+    }
+
     #[test]
     fn saves_runs_and_resumes() {
         let dir = std::env::temp_dir().join(format!("logos-results-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let r = ResultsDir::create(&dir, meta()).unwrap();
-        assert!(r.save_run(&run(2, "completed")).unwrap());
-        assert!(!r.save_run(&run(1, "halted")).unwrap());
+        assert!(r.save_run(&run(2, "completed"), &record(2)).unwrap());
+        assert!(!r.save_run(&run(1, "halted"), &record(1)).unwrap());
         assert!(ResultsDir::create(&dir, meta()).is_err(), "folder in use");
 
         let r = ResultsDir::open(&dir).unwrap();
@@ -315,7 +366,15 @@ mod tests {
         let table = std::fs::read_to_string(dir.join(TABLE_FILE)).unwrap();
         assert!(table.contains("\"2\",\"1\",\"3\",\"2.5\""));
 
-        r.save_run(&run(1, "completed")).unwrap();
+        // A run file written before run records existed.
+        std::fs::write(
+            dir.join(RUNS_DIR).join("000001.json"),
+            serde_json::to_vec(&run(1, "completed").raw).unwrap(),
+        )
+        .unwrap();
+        let both = r.saved().unwrap();
+        assert_eq!(both[0].record, None);
+        assert_eq!(both[1].record, Some(record(2)));
         let p = r.write_parquet(&experiment()).unwrap();
         let back = crate::parquet::read_parquet(&p).unwrap();
         assert_eq!(back.rows.len(), 2);
