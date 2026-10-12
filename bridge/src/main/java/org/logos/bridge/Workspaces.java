@@ -144,6 +144,10 @@ final class Workspaces {
                 }
                 case "workspace.program" ->
                     onThread(idle(handle(params)), reply, h -> ProgramInfo.of(h.ws));
+                case "workspace.check" -> {
+                    String source = string(params, "source");
+                    onThread(idle(handle(params)), reply, h -> Check.of(h.ws, source));
+                }
                 case "workspace.references" -> {
                     String source = string(params, "source");
                     onThread(idle(handle(params)), reply, h -> References.of(h.ws, source));
@@ -354,7 +358,10 @@ final class Workspaces {
                 // editor can show the error.
                 Map<String, Object> err = new LinkedHashMap<>();
                 err.put("message", e.getMessage());
-                err.put("span", span(e.start(), e.end(), e.filename()));
+                // NetLogo names the code section "" (PROTOCOL.md: null).
+                String file = e.filename();
+                err.put("span", span(e.start(), e.end(),
+                        file == null || file.isEmpty() ? null : file));
                 errors.add(err);
             } catch (IOException | RuntimeException e) {
                 // Includes LogoException, which is a RuntimeException.
