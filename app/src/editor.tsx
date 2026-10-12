@@ -23,7 +23,9 @@ export type Op =
   | { op: "text"; index: number; text: string }
   | { op: "add"; kind: string; x: number; y: number; name: string }
   | { op: "delete"; index: number }
-  | { op: "world"; index: number; world: World };
+  | { op: "world"; index: number; world: World }
+  | { op: "part"; index: number; part: string; text: string }
+  | { op: "batch"; ops: Op[] };
 
 export interface World { minPxcor: number; maxPxcor: number; minPycor: number; maxPycor: number; patchSize: number }
 

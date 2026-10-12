@@ -1021,7 +1021,13 @@ impl Sessions {
         let mut doc = s.doc.lock().unwrap();
         let before = doc.nlogox.text().to_string();
         let globals_before = interface_globals(&doc.nlogox);
-        edit(&mut doc.nlogox).map_err(AppError::new)?;
+        if let Err(e) = edit(&mut doc.nlogox) {
+            // A batch that fails part way leaves nothing changed.
+            if doc.nlogox.text() != before {
+                doc.nlogox = Nlogox::parse(before).map_err(|e| AppError::new(e.to_string()))?;
+            }
+            return Err(AppError::new(e));
+        }
         if doc.nlogox.text() != before {
             doc.undo.push(before);
             if doc.undo.len() > 200 {

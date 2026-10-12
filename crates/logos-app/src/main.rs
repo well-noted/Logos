@@ -5,6 +5,7 @@
 
 mod engine;
 mod experiments;
+mod git;
 mod lsp;
 mod project;
 mod session;
@@ -544,8 +545,46 @@ enum WidgetOp {
         index: usize,
         world: logos_nlogox::widgets::World,
     },
+    Part {
+        index: usize,
+        part: String,
+        text: String,
+    },
+    Batch {
+        ops: Vec<WidgetOp>,
+    },
 }
 
+fn apply_widget_op(n: &mut logos_nlogox::Nlogox, op: WidgetOp) -> Result<(), String> {
+    let r = match op {
+        WidgetOp::Bounds {
+            index,
+            x,
+            y,
+            width,
+            height,
+        } => n.set_widget_bounds(index, x, y, width.max(10), height.max(10)),
+        WidgetOp::Attr { index, name, value } => n.set_widget_attribute(index, &name, &value),
+        WidgetOp::Text { index, text } => n.set_widget_text(index, &text),
+        WidgetOp::Part { index, part, text } => n.set_widget_part(index, &part, &text),
+        WidgetOp::Add { kind, x, y, name } => {
+            let xml = logos_nlogox::widgets::new_widget_xml(&kind, x, y, &name)
+                .ok_or_else(|| format!("unknown widget kind {kind}"))?;
+            n.add_widget(&xml).map(|_| ())
+        }
+        WidgetOp::Delete { index } => n.delete_widget(index),
+        WidgetOp::World { index, world } => n.set_world(index, &world),
+        WidgetOp::Batch { ops } => {
+            for op in ops {
+                apply_widget_op(n, op)?;
+            }
+            Ok(())
+        }
+    };
+    r.map_err(|e| e.to_string())
+}
+
+/// One interface edit, or several as one undo step (`batch`, used by replace).
 #[tauri::command]
 async fn model_edit_widget(
     core: CoreState<'_>,
@@ -554,31 +593,16 @@ async fn model_edit_widget(
 ) -> AppResult<session::WidgetEdit> {
     let core = core.inner().clone();
     blocking(move || {
-        core.sessions()?.edit_widgets(id, |n| {
-            let r = match op {
-                WidgetOp::Bounds {
-                    index,
-                    x,
-                    y,
-                    width,
-                    height,
-                } => n.set_widget_bounds(index, x, y, width.max(10), height.max(10)),
-                WidgetOp::Attr { index, name, value } => {
-                    n.set_widget_attribute(index, &name, &value)
-                }
-                WidgetOp::Text { index, text } => n.set_widget_text(index, &text),
-                WidgetOp::Add { kind, x, y, name } => {
-                    let xml = logos_nlogox::widgets::new_widget_xml(&kind, x, y, &name)
-                        .ok_or_else(|| format!("unknown widget kind {kind}"))?;
-                    n.add_widget(&xml).map(|_| ())
-                }
-                WidgetOp::Delete { index } => n.delete_widget(index),
-                WidgetOp::World { index, world } => n.set_world(index, &world),
-            };
-            r.map_err(|e| e.to_string())
-        })
+        core.sessions()?
+            .edit_widgets(id, |n| apply_widget_op(n, op))
     })
     .await
+}
+
+#[tauri::command]
+async fn git_status(core: CoreState<'_>, id: u64) -> AppResult<Option<git::GitStatus>> {
+    let path = model_path(&core, id)?;
+    blocking(move || Ok(path.parent().and_then(git::status))).await
 }
 
 #[tauri::command]
@@ -898,6 +922,7 @@ fn main() {
             model_widgets,
             model_edit_widget,
             model_undo,
+            git_status,
             lsp_send,
             lsp_code_uri,
             project_status,

@@ -485,6 +485,8 @@ pub enum WidgetEditError {
     },
     #[error("choice {choice} is out of range for widget {index}")]
     NoSuchChoice { index: usize, choice: usize },
+    #[error("widget {index} has no part {part}")]
+    NoSuchPart { index: usize, part: String },
     #[error("the world must contain the origin and patches must have a positive size")]
     InvalidWorld,
     #[error(transparent)]
@@ -671,6 +673,39 @@ impl Nlogox {
     /// Sets the text of a widget: a button's commands, a monitor's reporter, a note's text.
     pub fn set_widget_text(&mut self, index: usize, text: &str) -> Result<(), WidgetEditError> {
         let path = self.widget_element_path(index)?;
+        self.set_text(&path, text)?;
+        Ok(())
+    }
+
+    /// Sets the text of a part inside a widget, named by a path of element names separated by
+    /// `/`, each optionally followed by `.n` for the n-th element of that name (from 0): a
+    /// plot's `setup` or `update`, or `pen.1/update` for the second pen's update commands.
+    pub fn set_widget_part(
+        &mut self,
+        index: usize,
+        part: &str,
+        text: &str,
+    ) -> Result<(), WidgetEditError> {
+        let mut path = self.widget_element_path(index)?;
+        let missing = || WidgetEditError::NoSuchPart {
+            index,
+            part: part.to_string(),
+        };
+        for step in part.split('/') {
+            let (name, nth) = match step.split_once('.') {
+                Some((n, k)) => (n, k.parse::<usize>().map_err(|_| missing())?),
+                None => (step, 0),
+            };
+            let e = self.root.at(&path).ok_or_else(missing)?;
+            let i = e
+                .elements()
+                .enumerate()
+                .filter(|(_, c)| c.name == name)
+                .nth(nth)
+                .map(|(i, _)| i)
+                .ok_or_else(missing)?;
+            path.push(i);
+        }
         self.set_text(&path, text)?;
         Ok(())
     }
@@ -1017,6 +1052,28 @@ mod tests {
         };
         assert!(f.set_world(0, &bad).is_err());
         assert!(f.set_world(1, &back).is_err());
+    }
+
+    #[test]
+    fn plot_parts() {
+        let mut f = Nlogox::parse(FILE).unwrap();
+        let plot = f
+            .typed_widgets()
+            .iter()
+            .position(|w| w.element == "plot")
+            .unwrap();
+        f.set_widget_part(plot, "update", "plot count turtles")
+            .unwrap();
+        f.set_widget_part(plot, "pen.0/update", "plot 1 < 2")
+            .unwrap();
+        let w = f.typed_widget(plot).unwrap();
+        let WidgetData::Plot { update, pens, .. } = &w.data else {
+            panic!()
+        };
+        assert_eq!(update, "plot count turtles");
+        assert_eq!(pens[0].update, "plot 1 < 2");
+        assert!(f.set_widget_part(plot, "pen.9/update", "x").is_err());
+        assert!(f.set_widget_part(plot, "nothing", "x").is_err());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 // The window's side regions (design 2.2): activity bar, side panel, bottom panel and status bar.
 
 import { useEffect, useRef, useState } from "preact/hooks";
+import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "./icons";
 import {
   activity, activityView, bottomOpen, bottomTab, dirty, engine, log, model, modelTab, notApplied, outline,
@@ -9,11 +10,12 @@ import {
 import { revealOffset } from "./code";
 import { FilesPanel } from "./project";
 import { ExperimentsPanel, ResultsPanel } from "./experiments";
+import { SearchPanel } from "./searchpanel";
 
 const ACTIVITIES: { id: Activity; label: string; icon: string; later?: string }[] = [
   { id: "model", label: "Model", icon: "model" },
   { id: "files", label: "Files", icon: "files" },
-  { id: "search", label: "Search", icon: "search", later: "Search and replace across the model comes in step 19." },
+  { id: "search", label: "Search", icon: "search" },
   { id: "experiments", label: "Experiments", icon: "experiments" },
   { id: "results", label: "Results", icon: "results" },
   { id: "llm", label: "LLM", icon: "llm", later: "The LLM bridge editor and call log are Phase 3." },
@@ -41,7 +43,7 @@ export function SidePanel() {
     <aside class="sidepanel" aria-label={a.label}>
       <div class="panel-head"><span>{a.label}</span></div>
       <div class="panel-body">
-        {a.id === "model" ? <Outline /> : a.id === "files" ? <FilesPanel /> : a.id === "experiments" ? <ExperimentsPanel /> : a.id === "results" ? <ResultsPanel /> : <p class="empty-note">{a.later}</p>}
+        {a.id === "model" ? <Outline /> : a.id === "files" ? <FilesPanel /> : a.id === "experiments" ? <ExperimentsPanel /> : a.id === "results" ? <ResultsPanel /> : a.id === "search" ? <SearchPanel /> : <p class="empty-note">{a.later}</p>}
       </div>
     </aside>
   );
@@ -181,9 +183,27 @@ function CommandCenter() {
 
 // ---- status bar ---------------------------------------------------------------------------
 
+interface GitStatus { branch: string; changed: number }
+
+/** The git branch and changed-file count, refreshed when the model or its saved state
+ * changes and every 15 seconds (spec part R). */
+function useGitStatus(id: number | undefined, saved: boolean): GitStatus | null {
+  const [g, setG] = useState<GitStatus | null>(null);
+  useEffect(() => {
+    if (id === undefined) { setG(null); return; }
+    let live = true;
+    const load = () => invoke<GitStatus | null>("git_status", { id }).then((r) => { if (live) setG(r); }).catch(() => {});
+    load();
+    const t = window.setInterval(load, 15000);
+    return () => { live = false; clearInterval(t); };
+  }, [id, saved]);
+  return g;
+}
+
 export function StatusBar() {
   const e = engine.value;
   const m = model.value;
+  const git = useGitStatus(m?.id, !dirty.value);
   const engineText = e.state === "ready"
     ? `NetLogo ${e.hello?.netlogoVersion?.replace("NetLogo ", "") ?? e.version}`
     : { searching: "Looking for NetLogo", notFound: "NetLogo not found", starting: "Starting NetLogo", failed: "Engine failed", ready: "" }[e.state];
@@ -196,6 +216,8 @@ export function StatusBar() {
       {notApplied.value && <span>Changes not applied</span>}
       <span class="grow" />
       {problems.value.length > 0 && <span>{problems.value.length} problem{problems.value.length > 1 ? "s" : ""}</span>}
+      {git && <span title={`${git.changed} changed file${git.changed === 1 ? "" : "s"} in the repository`}>
+        <Icon name="git" /> {git.branch}{git.changed ? ` · ${git.changed} changed` : ""}</span>}
       {m && <span>{dirty.value ? "● unsaved" : "saved"}</span>}
       {m && <span title={m.path}>{m.name}</span>}
     </footer>
