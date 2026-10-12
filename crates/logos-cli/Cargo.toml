@@ -16,7 +16,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 ctrlc = "3"
 logos-bridge-client = { path = "../logos-bridge-client" }
 logos-experiment = { path = "../logos-experiment" }
+logos-lsp = { path = "../logos-lsp" }
 logos-nlogox = { path = "../logos-nlogox" }
 logos-project = { path = "../logos-project" }
 logos-secrets = { path = "../logos-secrets" }
+lsp-server = "0.7"
 rpassword = "7.5"

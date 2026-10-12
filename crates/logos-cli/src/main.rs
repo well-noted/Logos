@@ -2,6 +2,7 @@
 
 mod check;
 mod init;
+mod lsp;
 mod run;
 mod secrets;
 
@@ -23,6 +24,8 @@ const USAGE: &str = "\
 usage:
   logos project init [FOLDER] [--model FILE] [--dry-run] [--yes]
   logos check [FOLDER] [--compile]
+  logos convert FILE.nlogo [OUTPUT.nlogox]
+  logos lsp [--no-netlogo]
 {run_usage}
 {secrets_usage}
 
@@ -36,6 +39,14 @@ usage:
   check          look for problems that would stop a run: the model, the engine, listed files,
                  data dictionaries, Python and its packages, required secrets
     --compile      also open the model in NetLogo and report compile errors
+
+  convert        convert a NetLogo 6 model (.nlogo) to .nlogox the way NetLogo does; the
+                 output defaults to the same name with .nlogox and is never replaced
+
+  lsp            run the language server for editors (VS Code and others) on standard input
+                 and output
+    --no-netlogo   don't start NetLogo: no compile errors from NetLogo, and names in
+                   procedures aren't resolved
 ";
 
 fn main() -> ExitCode {
@@ -44,6 +55,8 @@ fn main() -> ExitCode {
     let result = match words.as_slice() {
         ["project", "init", rest @ ..] => init::run(rest),
         ["check", rest @ ..] => check::run(rest),
+        ["convert", rest @ ..] => lsp::convert(rest),
+        ["lsp", rest @ ..] => lsp::lsp(rest),
         ["run", rest @ ..] => run::run(rest),
         ["secrets", rest @ ..] => secrets::run(rest),
         ["help" | "--help" | "-h"] | [] => {

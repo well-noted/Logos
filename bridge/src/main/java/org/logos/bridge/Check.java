@@ -17,9 +17,19 @@ import org.nlogo.headless.HeadlessWorkspace;
 final class Check {
     private Check() {}
 
-    static Map<String, Object> of(HeadlessWorkspace ws, String source) {
+    /**
+     * @param interfaceGlobals the globals the model's widgets define, or null for the
+     *     workspace's. A model that didn't compile when it was opened has none in the
+     *     workspace, so an editor passes them.
+     */
+    static Map<String, Object> of(HeadlessWorkspace ws, String source,
+            List<String> interfaceGlobals) {
         Program base = Program.fromDialect(ws.dialect());
-        Program program = base.copy(ws.world().program().interfaceGlobals(), base.userGlobals(),
+        scala.collection.immutable.Seq<String> globals = interfaceGlobals == null
+                ? ws.world().program().interfaceGlobals()
+                : scala.jdk.javaapi.CollectionConverters.asScala(interfaceGlobals.stream()
+                        .map(g -> g.toUpperCase(java.util.Locale.ROOT)).toList()).toSeq();
+        Program program = base.copy(globals, base.userGlobals(),
                 base.turtleVars(), base.patchVars(), base.linkVars(), base.breeds(),
                 base.linkBreeds(), base.dialect());
         // Code generated from a system dynamics diagram is compiled with the model's code.
