@@ -267,6 +267,60 @@ pub struct PrimitivesParams<'a> {
 pub struct PrimitivesResult {
     pub netlogo_version: String,
     pub primitives: Vec<PrimitiveInfo>,
+    /// NetLogo's built-in agent variables, in NetLogo's order.
+    #[serde(default)]
+    pub agent_variables: AgentVariables,
+    /// Names the parser reads as literal values: `true`, `nobody`, `pi`, color names.
+    #[serde(default)]
+    pub constants: Vec<ConstantInfo>,
+    /// `to`, `to-report`, `end`, `globals`, ... (any name ending in `-own` is one too).
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    /// Primitives NetLogo derives from each declared breed. `name` is a pattern in which
+    /// `<breeds>` stands for the plural and `<breed>` for the singular.
+    #[serde(default)]
+    pub breed_primitives: Vec<BreedPrimitiveInfo>,
+    /// The type masks a parser needs (`commandBlock`, `optional`, ...) and the command and
+    /// normal precedences, from NetLogo's `Syntax`.
+    #[serde(default)]
+    pub type_masks: std::collections::BTreeMap<String, i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct AgentVariables {
+    pub observer: Vec<VariableInfo>,
+    pub turtle: Vec<VariableInfo>,
+    pub patch: Vec<VariableInfo>,
+    pub link: Vec<VariableInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct VariableInfo {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: ArgType,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ConstantInfo {
+    pub name: String,
+    pub value: Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BreedKind {
+    Turtle,
+    DirectedLink,
+    UndirectedLink,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BreedPrimitiveInfo {
+    #[serde(flatten)]
+    pub primitive: PrimitiveInfo,
+    pub breed_kind: BreedKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -298,6 +352,9 @@ pub struct PrimitiveInfo {
     pub agent_class: String,
     pub block_agent_class: Option<String>,
     pub introduces_context: bool,
+    /// Usable by name alone where an anonymous procedure is expected (`foreach xs print`).
+    #[serde(default)]
+    pub can_be_concise: bool,
     pub extension: Option<String>,
 }
 
