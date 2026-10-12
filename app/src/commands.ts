@@ -6,6 +6,7 @@ import {
   paletteOpen, rightOpen, running, saveModel, settingsOpen, stepModel, stopModel, viewPopped, engine,
 } from "./state";
 import { canRedo, canUndo, editMode, undoInterface } from "./editor";
+import { describeView } from "./interface";
 
 export interface Command {
   id: string;
@@ -43,6 +44,8 @@ export const COMMANDS: Command[] = [
     run: () => { bottomOpen.value = true; bottomTab.value = "command"; setTimeout(() => document.getElementById("cc-input")?.focus(), 0); } },
   { id: "view.inspector", title: "Show or hide inspectors", menu: "View", key: "Ctrl+I", run: () => { rightOpen.value = !rightOpen.value; } },
   { id: "view.popout", title: "Pop out view", menu: "View", key: "Ctrl+Shift+V", enabled: hasModel, run: () => { viewPopped.value = !viewPopped.value; } },
+  { id: "view.describe", title: "Describe the view", menu: "View", key: "Ctrl+Shift+D", enabled: hasModel,
+    run: () => { modelTab.value = "interface"; void describeView(); } },
   { id: "view.layoutNetLogo", title: "Layout: NetLogo", menu: "View", enabled: hasModel,
     run: () => { modelTab.value = "interface"; viewPopped.value = false; rightOpen.value = false; bottomOpen.value = true; bottomTab.value = "command"; } },
   { id: "view.layoutCodeRun", title: "Layout: Code and run", menu: "View", enabled: hasModel,

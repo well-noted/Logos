@@ -1,16 +1,17 @@
 // The Interface tab (design 2.4, 3.2): NetLogo's toolbar, the run strip, and the model's
 // widgets at their saved positions, drawn by Logos.
 
+import { signal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { render as renderMarkdown } from "./info";
 import type { Widget } from "./ipc";
 import { bindCanvas, frames } from "./frames";
 import { Icon } from "./icons";
 import {
-  applyCode, inspect, model, monitors, notApplied, output, pressButton, running, setSpeed, setWidgetValue, speed, stepModel,
+  applyCode, inspect, model, monitors, notApplied, outline, output, pressButton, running, setSpeed, setWidgetValue, speed, stepModel,
   stopModel, ticks, viewOnTicks, viewPopped,
 } from "./state";
-import { ipc } from "./ipc";
+import { errorText, ipc } from "./ipc";
 import { AddMenu, EditFrame, canRedo, canUndo, editMode, selected, undoInterface } from "./editor";
 
 /** A NetLogo color (Java ARGB integer) as CSS. */
@@ -292,11 +293,44 @@ function PlotWidget({ w, style, cls }: WProps) {
   );
 }
 
+/** The last "Describe view" text, shown under the view and read by screen readers (X2). */
+export const viewDescription = signal<string | null>(null);
+
+/** A text summary of the view: ticks, world size and how many agents of each kind. Reads
+ * through workspace.observe (D-14). */
+export async function describeView() {
+  const m = model.value;
+  const v = m?.widgets.find((w) => w.data.kind === "view");
+  if (!m || !v || v.data.kind !== "view") return;
+  const d = v.data;
+  const breeds = outline.value
+    .filter((e) => e.kind === "breed" && e.detail)
+    .map((e) => ({ plural: e.detail!.split(/\s+/)[0], link: e.name.toLowerCase().includes("link") }));
+  const reporters = ["count turtles", "count links", ...breeds.map((b) => `count ${b.plural}`)];
+  try {
+    const r = await ipc.observe(m.id, reporters);
+    const n = (i: number) => (r.values[i]?.ok ? r.values[i].text : "?");
+    const turtleBreeds = breeds.map((b, i) => ({ ...b, n: n(i + 2) })).filter((b) => !b.link);
+    const linkBreeds = breeds.map((b, i) => ({ ...b, n: n(i + 2) })).filter((b) => b.link);
+    const parts = [
+      `${d.tickCounterLabel || "Ticks"}: ${ticksText(ticks.value)}.`,
+      `World ${d.maxPxcor - d.minPxcor + 1} by ${d.maxPycor - d.minPycor + 1} patches.`,
+      `${n(0)} turtles${turtleBreeds.length ? `: ${turtleBreeds.map((b) => `${b.n} ${b.plural}`).join(", ")}` : ""}.`,
+      `${n(1)} links${linkBreeds.length ? `: ${linkBreeds.map((b) => `${b.n} ${b.plural}`).join(", ")}` : ""}.`,
+    ];
+    viewDescription.value = parts.join(" ");
+  } catch (e) {
+    viewDescription.value = `Can't describe the view: ${errorText(e)}`;
+  }
+}
+
 function ViewWidget({ w, style, cls }: WProps) {
   const d = w.data;
   const ref = useRef<HTMLCanvasElement>(null);
   const [hasFrame, setHasFrame] = useState(!!frames.view);
   const [tip, setTip] = useState<{ x: number; y: number; text: string } | null>(null);
+  /** A patch chosen with the arrow keys, for inspecting without a mouse (X1). */
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
@@ -330,15 +364,50 @@ function ViewWidget({ w, style, cls }: WProps) {
     if (i !== null && a) inspect({ kind: "turtle", who: a.who[i] });
     else inspect({ kind: "patch", x: Math.round(x), y: Math.round(y) });
   };
+  const onKey = (e: KeyboardEvent) => {
+    const moves: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] };
+    if (moves[e.key]) {
+      e.preventDefault();
+      const step = e.shiftKey ? 10 : 1;
+      const [mx, my] = moves[e.key];
+      const c = cursor ?? { x: Math.round((d.minPxcor + d.maxPxcor) / 2), y: Math.round((d.minPycor + d.maxPycor) / 2) };
+      const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+      setCursor({ x: clamp(c.x + mx * step, d.minPxcor, d.maxPxcor), y: clamp(c.y + my * step, d.minPycor, d.maxPycor) });
+    } else if (e.key === "Enter" && cursor) {
+      e.preventDefault();
+      const i = frames.turtleAt(cursor.x, cursor.y, 0.5);
+      const a = frames.agents;
+      if (i !== null && a) inspect({ kind: "turtle", who: a.who[i] });
+      else inspect({ kind: "patch", x: cursor.x, y: cursor.y });
+    } else if (e.key === "d" || e.key === "D") {
+      e.preventDefault();
+      void describeView();
+    } else if (e.key === "Escape") {
+      setCursor(null);
+    }
+  };
+  const cursorBox = cursor && (() => {
+    const wx = d.maxPxcor - d.minPxcor + 1, wy = d.maxPycor - d.minPycor + 1;
+    return { left: `${((cursor.x - d.minPxcor) / wx) * 100}%`, top: `${((d.maxPycor - cursor.y) / wy) * 100}%`, width: `${100 / wx}%`, height: `${100 / wy}%` };
+  })();
   const counts = [...frames.countsByBreed().entries()].map(([b, n]) => `${n} ${b === 0 ? "turtles" : `of breed ${b}`}`).join(", ");
   return (
     <div class={`${cls} w-view`} style={style}>
       {d.showTickCounter && (
         <div class="tickbar"><span>{d.tickCounterLabel || "ticks"}: {ticksText(ticks.value)}</span></div>
       )}
-      <canvas ref={ref} role="img" tabIndex={0}
-        aria-label={`Live view, ${d.maxPxcor - d.minPxcor + 1} by ${d.maxPycor - d.minPycor + 1} patches. ${counts || "No agent data yet."} Click an agent to inspect it.`}
-        onMouseMove={onMove} onMouseLeave={() => setTip(null)} onClick={onClick} />
+      <div class="view-area">
+        <canvas ref={ref} role="img" tabIndex={0}
+          aria-label={`Live view, ${d.maxPxcor - d.minPxcor + 1} by ${d.maxPycor - d.minPycor + 1} patches. ${counts || "No agent data yet."} Click an agent to inspect it, or use the arrow keys to choose a patch and Enter to inspect it. D describes the view.`}
+          aria-describedby="view-description"
+          onMouseMove={onMove} onMouseLeave={() => setTip(null)} onClick={onClick} onKeyDown={onKey} onBlur={() => setCursor(null)} />
+        {cursorBox && <div class="view-cursor" style={cursorBox} aria-hidden="true" />}
+      </div>
+      {cursor && <div class="sr-only" role="status">patch {cursor.x} {cursor.y}</div>}
+      <div id="view-description" class={viewDescription.value ? "view-description" : "sr-only"} role="status">
+        {viewDescription.value}
+        {viewDescription.value && <button class="icon-btn" aria-label="Close the description" onClick={() => { viewDescription.value = null; }}><Icon name="close" /></button>}
+      </div>
       {!hasFrame && <div class="placeholder">The view appears when NetLogo has drawn it.</div>}
       {tip && <div class="view-tip" style={{ left: `${tip.x}px`, top: `${tip.y}px` }}>{tip.text}</div>}
     </div>
