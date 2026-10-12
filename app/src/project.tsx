@@ -85,8 +85,52 @@ export function ProjectDoc() {
   return p.isProject ? <ProjectSummary p={p} /> : <SetupReview />;
 }
 
+type ProjectEdit =
+  | { op: "engine"; engine: string }
+  | { op: "python"; requirements: string; interpreter: string }
+  | { op: "secrets"; required: string[]; optional: string[] }
+  | { op: "description"; path: string; description: string }
+  | { op: "addFile"; path: string; role: string };
+
+/** A text field that saves when it loses focus or on Enter. */
+function SaveField({ id, value, onSave, placeholder, mono, label }: {
+  id?: string; value: string; onSave: (v: string) => void; placeholder?: string; mono?: boolean; label?: string;
+}) {
+  const [v, setV] = useState(value);
+  useEffect(() => setV(value), [value]);
+  const commit = () => { if (v !== value) onSave(v); };
+  return <input id={id} type="text" class={mono ? "mono" : undefined} value={v} placeholder={placeholder} aria-label={label}
+    style="width: 100%; min-width: 0; box-sizing: border-box"
+    onInput={(e) => setV((e.target as HTMLInputElement).value)} onBlur={commit} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} />;
+}
+
+function SecretNames({ label, names, onChange }: { label: string; names: string[]; onChange: (n: string[]) => void }) {
+  const [draft, setDraft] = useState("");
+  const add = () => { const n = draft.trim(); if (n && !names.includes(n)) onChange([...names, n]); setDraft(""); };
+  return (
+    <div>
+      <div class="chips" role="list" aria-label={label}>
+        {names.length === 0 && <span class="muted">none</span>}
+        {names.map((n) => (
+          <span class="chip mono" role="listitem">{n}
+            <button class="icon-btn" aria-label={`Remove ${n}`} onClick={() => onChange(names.filter((x) => x !== n))}><Icon name="close" /></button>
+          </span>
+        ))}
+      </div>
+      <div style="display: flex; gap: 4px; margin-top: 4px">
+        <input type="text" class="mono" placeholder="NAME_OF_SECRET" aria-label={`Add to ${label}`} value={draft}
+          onInput={(e) => setDraft((e.target as HTMLInputElement).value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+        <button class="btn small" onClick={add}>Add</button>
+      </div>
+    </div>
+  );
+}
+
 function ProjectSummary({ p }: { p: ProjectView }) {
   const m = model.value!;
+  const [source, setSource] = useState(false);
+  const [newPath, setNewPath] = useState("");
+  const [newRole, setNewRole] = useState("input");
   const setRole = async (path: string, role: string) => {
     try {
       project.value = await invoke<ProjectView>("project_set_role", { id: m.id, path, role });
@@ -94,28 +138,86 @@ function ProjectSummary({ p }: { p: ProjectView }) {
       refreshProject();
     } catch (e) { showToast(errorText(e)); }
   };
+  const edit = async (e: ProjectEdit, what: string) => {
+    try {
+      project.value = await invoke<ProjectView>("project_edit", { id: m.id, edit: e });
+      addActivity(what);
+      refreshProject();
+      return true;
+    } catch (er) { showToast(errorText(er)); return false; }
+  };
+  const python = { requirements: p.requirements ?? "", interpreter: p.interpreter ?? "" };
   return (
     <div class="doc-page">
-      <h2>Project</h2>
-      <p class="muted">Folder <span class="mono">{p.dir}</span> · model <span class="mono">{p.model}</span>{p.engine ? <> · engine <span class="mono">{p.engine}</span></> : null}</p>
-      <h3>Files</h3>
-      <table class="grid-table">
-        <thead><tr><th>File</th><th>Role</th><th>Exists</th></tr></thead>
-        <tbody>
-          {p.files.map((f) => (
-            <tr>
-              <td class="mono"><button class="link-btn" onClick={() => openFile(f.path, f.role)}>{f.path}</button></td>
-              <td>
-                <select aria-label={`Role of ${f.path}`} value={f.role} onChange={(e) => setRole(f.path, (e.target as HTMLSelectElement).value)}>
+      <div style="display: flex; align-items: baseline; gap: 12px">
+        <h2>Project</h2>
+        <span style="flex: 1" />
+        <button class="btn small" aria-pressed={source} onClick={() => setSource(!source)}>{source ? "Show the form" : "View source"}</button>
+      </div>
+      <p class="muted">Folder <span class="mono">{p.dir}</span>. Changes are written to <span class="mono">logos.toml</span> at once; anything else in it is kept.</p>
+      {source ? <pre class="log" style="max-height: 70vh">{p.source}</pre> : (
+        <>
+          <div class="form-grid" style="grid-template-columns: 160px minmax(0, 480px)">
+            <label>Model</label><div class="mono">{p.model}</div>
+            <label for="pj-engine">Engine</label>
+            <SaveField id="pj-engine" mono value={p.engine ?? ""} placeholder="netlogo 7.0.4"
+              onSave={(v) => edit({ op: "engine", engine: v }, `Set the project's engine to ${v}`)} />
+          </div>
+
+          <h3>Files</h3>
+          <table class="grid-table">
+            <thead><tr><th>File</th><th>Role</th><th>Description</th><th>Exists</th></tr></thead>
+            <tbody>
+              {p.files.map((f) => (
+                <tr>
+                  <td class="mono"><button class="link-btn" onClick={() => openFile(f.path, f.role)}>{f.path}</button></td>
+                  <td>
+                    <select aria-label={`Role of ${f.path}`} value={f.role} onChange={(e) => setRole(f.path, (e.target as HTMLSelectElement).value)}>
+                      {ROLES.map((r) => <option value={r}>{r}</option>)}
+                      <option value="none">remove from project</option>
+                    </select>
+                  </td>
+                  <td><SaveField value={f.description ?? ""} label={`Description of ${f.path}`}
+                    onSave={(v) => edit({ op: "description", path: f.path, description: v }, `Described ${f.path}`)} /></td>
+                  <td>{f.exists ? "yes" : <span class="muted">not yet</span>}</td>
+                </tr>
+              ))}
+              <tr>
+                <td><input type="text" class="mono" placeholder="data/new-file.csv" aria-label="Path of a file to add" value={newPath}
+                  style="width: 100%; box-sizing: border-box" onInput={(e) => setNewPath((e.target as HTMLInputElement).value)} /></td>
+                <td><select aria-label="Role of the file to add" value={newRole} onChange={(e) => setNewRole((e.target as HTMLSelectElement).value)}>
                   {ROLES.map((r) => <option value={r}>{r}</option>)}
-                  <option value="none">remove from project</option>
-                </select>
-              </td>
-              <td>{f.exists ? "yes" : <span class="muted">not yet</span>}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                </select></td>
+                <td><button class="btn small" disabled={!newPath.trim()}
+                  onClick={async () => { if (await edit({ op: "addFile", path: newPath, role: newRole }, `Added ${newPath} to the project`)) setNewPath(""); }}>Add file</button></td>
+                <td />
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Secrets</h3>
+          <p class="muted" style="margin-top: 0">Names only; values stay in the credential store (<button class="link-btn" onClick={() => openDoc({ id: "secrets", kind: "secrets" })}>Secrets</button>).</p>
+          <div class="form-grid" style="grid-template-columns: 160px minmax(0, 480px)">
+            <label>Required</label>
+            <SecretNames label="Required secrets" names={p.required}
+              onChange={(n) => edit({ op: "secrets", required: n, optional: p.optional }, "Changed the required secrets")} />
+            <label>Optional</label>
+            <SecretNames label="Optional secrets" names={p.optional}
+              onChange={(n) => edit({ op: "secrets", required: p.required, optional: n }, "Changed the optional secrets")} />
+          </div>
+
+          <h3>Python</h3>
+          <div class="form-grid" style="grid-template-columns: 160px minmax(0, 480px)">
+            <label for="pj-req">Requirements file</label>
+            <SaveField id="pj-req" mono value={python.requirements} placeholder="requirements.txt"
+              onSave={(v) => edit({ op: "python", requirements: v, interpreter: python.interpreter }, "Set the Python requirements file")} />
+            <label for="pj-py">Interpreter</label>
+            <SaveField id="pj-py" mono value={python.interpreter} placeholder="found by Logos when empty"
+              onSave={(v) => edit({ op: "python", requirements: python.requirements, interpreter: v }, "Set the Python interpreter")} />
+          </div>
+        </>
+      )}
+
       <h3>Check</h3>
       <ul class="findings">
         {findings.value.map((f) => (
@@ -124,10 +226,7 @@ function ProjectSummary({ p }: { p: ProjectView }) {
           </li>
         ))}
       </ul>
-      <div class="actions"><button class="btn" onClick={() => refreshProject()}>Check again</button>
-        <button class="btn" onClick={() => openDoc({ id: "secrets", kind: "secrets" })}>Secrets…</button></div>
-      <h3>logos.toml</h3>
-      <pre class="log" style="max-height: 320px">{p.source}</pre>
+      <div class="actions"><button class="btn" onClick={() => refreshProject()}>Check again</button></div>
     </div>
   );
 }
