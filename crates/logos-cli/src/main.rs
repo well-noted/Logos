@@ -2,22 +2,28 @@
 
 mod check;
 mod init;
+mod run;
 mod secrets;
 
 use std::process::ExitCode;
 
 fn usage() -> String {
-    USAGE.replace(
-        "{secrets_usage}",
-        secrets::USAGE.split("\n\n").next().unwrap_or(""),
-    ) + "\n"
-        + secrets::USAGE.split("\n\n").nth(1).unwrap_or("")
+    let first = |u: &'static str| u.split("\n\n").next().unwrap_or("");
+    let rest = |u: &'static str| u.split_once("\n\n").map(|(_, r)| r).unwrap_or("");
+    USAGE
+        .replace("{run_usage}", first(run::USAGE))
+        .replace("{secrets_usage}", first(secrets::USAGE))
+        + "\n"
+        + rest(run::USAGE)
+        + "\n\n"
+        + rest(secrets::USAGE)
 }
 
 const USAGE: &str = "\
 usage:
   logos project init [FOLDER] [--model FILE] [--dry-run] [--yes]
   logos check [FOLDER] [--compile]
+{run_usage}
 {secrets_usage}
 
   project init   propose logos.toml for the model in FOLDER (default: the current folder),
@@ -38,6 +44,7 @@ fn main() -> ExitCode {
     let result = match words.as_slice() {
         ["project", "init", rest @ ..] => init::run(rest),
         ["check", rest @ ..] => check::run(rest),
+        ["run", rest @ ..] => run::run(rest),
         ["secrets", rest @ ..] => secrets::run(rest),
         ["help" | "--help" | "-h"] | [] => {
             print!("{}", usage());

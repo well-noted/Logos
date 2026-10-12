@@ -55,7 +55,7 @@ The first request must be `engine.hello`. The bridge rejects every other method 
 ## 4. Threading and ordering
 
 - Each workspace has one job thread owned by the bridge. Every request that touches a workspace runs on that thread, in the order the requests arrived.
-- While a workspace is running (`workspace.run`), it accepts only `workspace.stop`, `workspace.observe` and `workspace.dispose`. Other requests for that workspace fail with `1005 Busy`. `workspace.observe` during a run is answered between two iterations of the run command.
+- While a workspace is running (`workspace.run` or `experiment.run`), it accepts only `workspace.stop`, `workspace.observe` and `workspace.dispose`. Other requests for that workspace fail with `1005 Busy`. `workspace.observe` during a `workspace.run` is answered between two iterations of the run command; during an `experiment.run` it is answered when the run ends.
 - Requests for different workspaces run in parallel.
 - `engine.*` and `model.*` requests run on a separate bridge thread and never wait for a workspace.
 
@@ -211,7 +211,7 @@ The command is compiled as `source` followed by NetLogo's `__experimentstepend`,
 
 **`workspace.stop`**
 
-Asks the run to stop after the current iteration, as pressing a forever button a second time does in NetLogo. The current iteration is not interrupted. The run then ends with a `run.finished` notification whose `reason` is `"halted"`. Calling it when nothing is running does nothing. `workspace.dispose` during a run stops it the same way before disposing.
+Asks the run to stop after the current iteration, as pressing a forever button a second time does in NetLogo. The current iteration is not interrupted. The run then ends with a `run.finished` notification whose `reason` is `"halted"`. During an `experiment.run`, the run ends after its current step and the `experiment.run` response has `reason` `"halted"`. Calling it when nothing is running does nothing. `workspace.dispose` during a run stops it the same way before disposing.
 
 ```
 params: { "workspace": WorkspaceId }
@@ -252,7 +252,71 @@ result: { "outputPath": string,
 - `.nlogo3d` files are not supported yet (`-32602`).
 - When auto-conversion fails for part of the model, the GUI shows the errors and, if the user continues, opens the partly converted model. This method does the same: it writes the partly converted model and returns the errors as `warnings`.
 
-### 5.4 Notifications (bridge to client)
+### 5.4 Experiments
+
+BehaviorSpace experiments, read with NetLogo's own loader and run by NetLogo's own run code (`org.nlogo.lab.Worker` at `v7.0.4`): variable settings (including `random-seed` and world dimensions), setup, go with `__experimentstepend`, the stop condition, the time limit, metrics every step, at the end or when `runMetricsCondition` reports true, post-run commands, and the handling of runtime errors are all BehaviorSpace's. Metrics, the stop condition and the metrics condition run on a clone of the main random number generator, as in BehaviorSpace (D-14).
+
+The client decides which run goes to which workspace and when. This is what makes resuming an experiment (skip runs already recorded) and budgets (start no more runs) possible. As in headless BehaviorSpace, a workspace is reused for many runs without being reopened, so a model whose setup doesn't clear the world carries state from one run to the next.
+
+A `Cell` is a setting or a measured value: `{ "value": Value, "text": string }`, or `{ "error": { "type": string, "message": string }, "text": string }` for a metric that failed. `text` is what BehaviorSpace writes for it in table and spreadsheet output (strings without quotes; a failed metric as `<RuntimePrimitiveException>` or similar). Clients write output files from `text`, so number formatting is the engine's.
+
+**`experiment.load`**
+
+Reads an experiment from the model the workspace was opened from, or from a separate BehaviorSpace XML file (`file`, as `--setup-file` in headless NetLogo), and compiles its commands and reporters in the workspace. The experiment stays loaded in the bridge, under the returned id, until `experiment.close` or shutdown; any workspace of the same model can run it.
+
+```
+params: { "workspace": WorkspaceId, "name": string, "file"?: string }
+result: { "experiment": int, "name": string, "repetitions": int, "sequentialRunOrder": bool,
+          "runMetricsEveryStep": bool, "runMetricsCondition": string, "timeLimit": int,
+          "exitCondition": string, "preExperiment": string, "setup": string, "go": string,
+          "postRun": string, "postExperiment": string,
+          "metrics": [string],      // without commented-out metrics, as BehaviorSpace uses them
+          "variables": [string],    // the variable columns of table output, in order
+          "runs": [[ { "name": string, ...Cell } ]],   // settings of run 1, 2, ... in order
+          "worldDimensions": { "minPxcor": int, "maxPxcor": int, "minPycor": int, "maxPycor": int } }
+```
+
+- A workspace opened with `workspace.openString` has no model file, so `file` is required.
+- No experiment with that name: `-32602`, with `data.experiments` listing the names found.
+- A compile error in any of the experiment's commands or reporters: `1001`.
+
+**`experiment.run`**
+
+Runs one run of a loaded experiment in the workspace and answers when the run ends. Plot updates are off during the run unless `updatePlots` is true, as in headless BehaviorSpace.
+
+```
+params: { "workspace": WorkspaceId, "experiment": int, "runNumber": int, "updatePlots"?: bool }
+result: { "runNumber": int, "settings": [ { "name": string, ...Cell } ],
+          "reason": "completed" | "halted" | "failed",
+          "steps": int,
+          "measurements": [ { "step": int, "values": [Cell] } ],   // one Cell per metric
+          "errors": [ { "type": string, "message": string } ],
+          "elapsedMillis": number }
+```
+
+- `"completed"`: the run ended normally (stop condition, time limit, or the go commands executed `stop`) and the post-run commands ran.
+- `"halted"`: `workspace.stop` ended the run after its current step. A halted run is not measured at the end and its post-run commands don't run.
+- `"failed"`: BehaviorSpace abandoned the run, for example because a variable doesn't exist or the stop condition reported something other than true or false. `errors` says why.
+- Runtime errors in setup, go, metrics or post-run commands are listed in `errors` and, as in BehaviorSpace, the run continues.
+- `steps` counts completed steps, as in the `[step]` column.
+
+**`experiment.command`**
+
+Runs the experiment's pre-experiment or post-experiment commands in the workspace. BehaviorSpace runs them in its first workspace, before the first run and after the last.
+
+```
+params: { "workspace": WorkspaceId, "experiment": int, "which": "preExperiment" | "postExperiment" }
+result: { "error": { "type": string, "message": string } | null }
+```
+
+**`experiment.close`**
+
+```
+params: { "experiment": int }
+result: {}
+```
+
+### 5.5 Notifications (bridge to client)
 
 | Method | Params |
 |---|---|

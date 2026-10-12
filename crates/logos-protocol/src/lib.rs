@@ -2,6 +2,7 @@
 //! crate and `bridge/` must change together with it.
 
 pub mod binary;
+pub mod experiment;
 pub mod frame;
 pub mod value;
 
@@ -9,6 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 pub use binary::{AgentFrame, DataFrame, DataFrameError, TurtleColumns, ViewFrame};
+pub use experiment::{
+    Cell, ExperimentCommandResult, LabError, LabRunEnd, LabRunResult, LoadedExperiment,
+    Measurement, Setting, WorldDimensions,
+};
 pub use frame::{Frame, FrameError, Kind, read_frame, write_frame};
 pub use value::NlValue;
 

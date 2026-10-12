@@ -10,12 +10,16 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use logos_protocol::experiment::{
+    ExperimentCloseParams, ExperimentCommandParams, ExperimentLoadParams, ExperimentRunParams,
+};
 use logos_protocol::{
     CommandParams, ConvertLegacyParams, ConvertLegacyResult, DataFrame, HelloParams, HelloResult,
     Incoming, Kind, ObserveParams, ObserveResult, OpenParams, OpenResult, PROTOCOL_VERSION,
     PrimitivesParams, PrimitivesResult, ProgramResult, Request, RpcError, RunFinished, RunParams,
     RunStreams, WorkspaceId, WorkspaceParams, read_frame, write_frame,
 };
+use logos_protocol::{ExperimentCommandResult, LabRunResult, LoadedExperiment};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value as Json;
@@ -47,7 +51,7 @@ pub enum ClientError {
     BadResponse { method: String, detail: String },
 }
 
-/// A message the bridge sent without being asked (PROTOCOL.md section 5.4).
+/// A message the bridge sent without being asked (PROTOCOL.md section 5.5).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notification {
     pub method: String,
@@ -320,6 +324,91 @@ impl Bridge {
             method: "workspace.observe".into(),
             detail: e.to_string(),
         })
+    }
+
+    // ------------------------------------------------------------ experiment methods
+
+    /// Loads a BehaviorSpace experiment from the workspace's model, or from a separate
+    /// experiments file, and compiles it in the workspace (PROTOCOL.md section 5.4).
+    pub fn experiment_load(
+        &self,
+        workspace: WorkspaceId,
+        name: &str,
+        file: Option<&Path>,
+    ) -> Result<LoadedExperiment, ClientError> {
+        let file = file
+            .map(|f| {
+                std::path::absolute(f).map_err(|e| {
+                    ClientError::Config(format!("cannot resolve {}: {e}", f.display()))
+                })
+            })
+            .transpose()?;
+        let file = file.as_ref().map(|f| f.to_string_lossy());
+        let v = self.call(
+            "experiment.load",
+            ExperimentLoadParams {
+                workspace,
+                name,
+                file: file.as_deref(),
+            },
+            DEFAULT_TIMEOUT,
+        )?;
+        LoadedExperiment::from_json(&v).map_err(|e| ClientError::BadResponse {
+            method: "experiment.load".into(),
+            detail: e.to_string(),
+        })
+    }
+
+    /// Runs one run of a loaded experiment and waits up to `timeout` for it to end.
+    pub fn experiment_run(
+        &self,
+        workspace: WorkspaceId,
+        experiment: u64,
+        run_number: u64,
+        update_plots: bool,
+        timeout: Duration,
+    ) -> Result<LabRunResult, ClientError> {
+        let v = self.call(
+            "experiment.run",
+            ExperimentRunParams {
+                workspace,
+                experiment,
+                run_number,
+                update_plots,
+            },
+            timeout,
+        )?;
+        LabRunResult::from_json(&v).map_err(|e| ClientError::BadResponse {
+            method: "experiment.run".into(),
+            detail: e.to_string(),
+        })
+    }
+
+    /// Runs the experiment's `preExperiment` or `postExperiment` commands.
+    pub fn experiment_command(
+        &self,
+        workspace: WorkspaceId,
+        experiment: u64,
+        which: &str,
+    ) -> Result<ExperimentCommandResult, ClientError> {
+        self.call_typed(
+            "experiment.command",
+            ExperimentCommandParams {
+                workspace,
+                experiment,
+                which,
+            },
+            DEFAULT_TIMEOUT,
+        )
+    }
+
+    pub fn experiment_close(&self, experiment: u64) -> Result<(), ClientError> {
+        self.call(
+            "experiment.close",
+            ExperimentCloseParams { experiment },
+            DEFAULT_TIMEOUT,
+        )?;
+        Ok(())
     }
 
     pub fn dispose(&self, workspace: WorkspaceId) -> Result<(), ClientError> {

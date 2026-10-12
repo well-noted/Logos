@@ -21,7 +21,7 @@ logos/
 │   ├── logos-protocol/        bridge message types (Rust side), generated or hand-kept in sync with protocol/
 │   ├── logos-bridge-client/   starts, supervises and talks to the bridge process
 │   ├── logos-conformance/     corpus manifest, runner, comparison of recorded outputs
-│   ├── logos-experiment/      BehaviorSpace experiments: read from .nlogox, run through the bridge, compare (A3, A6)
+│   ├── logos-experiment/      BehaviorSpace experiments: run through the bridge, write NetLogo's table output (A3, A6, E1)
 │   ├── logos-cli/             the `logos` binary
 │   └── xtask/                 build automation written in Rust (cargo xtask ...)
 ├── spikes/
@@ -150,7 +150,7 @@ cargo test -p logos-bridge-client -- --ignored --test-threads=1
 Other Phase 0 checks (each prints a summary line; `docs/phase-0-results.md` records them):
 
 ```
-cargo test -p logos-experiment -- --ignored --test-threads=1 --nocapture              # A3, A6
+cargo test -p logos-experiment -- --ignored --test-threads=1 --nocapture              # A3, A6, E1, E2
 cargo test -p logos-bridge-client --test extensions -- --ignored --test-threads=1 --nocapture  # A7
 cargo test -p logos-bridge-client --test agents -- --ignored --nocapture              # A5
 cargo test -p logos-bridge-client --test model_tools -- --ignored --test-threads=1 --nocapture # A8, A9
@@ -160,6 +160,8 @@ cargo test -p logos-syntax --test corpus -- --nocapture                         
 cargo test -p logos-syntax --test corpus --release -- --nocapture b7                  # B7
 cargo test -p logos-syntax --test corpus -- --ignored --nocapture                     # B5
 ```
+
+The E1 test `e1_netlogo_behaviorspace_suite` also runs the BehaviorSpace test cases from NetLogo's own repository and compares the table output with NetLogo's expected files. It reads them from `corpus/.cache/NetLogo-7.0.4` (the source tree at tag `v7.0.4`; only `test/lab` is needed), or from the folder in `LOGOS_NETLOGO_SRC` (for example the `v7.0.4` worktree described under "NetLogo source"), and is skipped when neither is there.
 
 The Spike B corpus tests read AA4-Combined, the Models Library of the installed NetLogo, and every `.nlogox` under the folders listed in `LOGOS_CORPUS_DIRS` (separated like `PATH`). `LOGOS_WORKERS` sets how many workspaces the B3 and B5 tests use at once (default 4).
 

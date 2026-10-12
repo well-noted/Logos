@@ -60,6 +60,7 @@ final class Workspaces {
     private final AtomicLong nextId = new AtomicLong(1);
     private final PrintStream log;
     private final Outbox outbox;
+    private final Experiments experiments = new Experiments();
 
     Workspaces(PrintStream log, Outbox outbox) {
         this.log = log;
@@ -71,6 +72,8 @@ final class Workspaces {
         final long id;
         final ExecutorService thread;
         HeadlessWorkspace ws;
+        /** The model file the workspace was opened from; null when opened from a string. */
+        String modelPath;
         final Map<String, Procedure> reporterCache = new HashMap<>();
 
         /** Offsets NetLogo adds to error positions for code it wraps (calibrated lazily). */
@@ -102,6 +105,16 @@ final class Workspaces {
     private static final class Run {
         final long id;
         volatile boolean stopRequested;
+        /** Stops an experiment run after its current step; null for other runs. */
+        volatile Runnable onStop;
+
+        void stop() {
+            stopRequested = true;
+            Runnable r = onStop;
+            if (r != null) {
+                r.run();
+            }
+        }
 
         Run(long id) {
             this.id = id;
@@ -140,7 +153,7 @@ final class Workspaces {
                     Handle h = handle(params);
                     synchronized (h) {
                         if (h.run != null) {
-                            h.run.stopRequested = true;
+                            h.run.stop();
                         }
                     }
                     reply.ok(Map.of());
@@ -164,7 +177,7 @@ final class Workspaces {
                         // The dispose task is queued behind the run loop, which ends after the
                         // current iteration.
                         if (h.run != null) {
-                            h.run.stopRequested = true;
+                            h.run.stop();
                         }
                     }
                     onThread(h, reply, x -> {
@@ -173,12 +186,71 @@ final class Workspaces {
                     });
                     h.thread.shutdown();
                 }
+                case "experiment.load" -> {
+                    String name = string(params, "name");
+                    String file = optionalString(params, "file");
+                    onThread(idle(handle(params)), reply,
+                            h -> experiments.load(h.ws, h.modelPath, name, file));
+                }
+                case "experiment.run" -> startExperimentRun(handle(params), params, reply);
+                case "experiment.command" -> {
+                    long id = requiredLong(params, "experiment");
+                    String which = string(params, "which");
+                    onThread(idle(handle(params)), reply,
+                            h -> experiments.command(h.ws, id, which));
+                }
+                case "experiment.close" -> {
+                    experiments.close(requiredLong(params, "experiment"));
+                    reply.ok(Map.of());
+                }
                 default -> throw new RpcException(
                         RpcException.METHOD_NOT_FOUND, "unknown method " + method);
             }
         } catch (RpcException e) {
             reply.error(e);
         }
+    }
+
+    /**
+     * Runs one experiment run. The workspace counts as running (PROTOCOL.md section 4) until
+     * the reply, which is sent when the run ends; {@code workspace.stop} ends it after the
+     * current step.
+     */
+    private void startExperimentRun(Handle h, Map<String, Object> params, Reply reply)
+            throws RpcException {
+        long id = requiredLong(params, "experiment");
+        long runNumber = requiredLong(params, "runNumber");
+        boolean updatePlots = Boolean.TRUE.equals(params.get("updatePlots"));
+        Run run;
+        synchronized (h) {
+            idle(h);
+            run = new Run(++h.runCount);
+            h.run = run;
+        }
+        onThreadRaw(h, () -> {
+            Object result;
+            try {
+                result = experiments.run(h.ws, id, runNumber, updatePlots, stop -> {
+                    run.onStop = stop;
+                    if (run.stopRequested) {
+                        stop.run();
+                    }
+                });
+            } catch (RpcException e) {
+                endRun(h);
+                reply.error(e);
+                return;
+            } catch (RuntimeException e) {
+                endRun(h);
+                log.println("logos-bridge: internal error in workspace " + h.id);
+                e.printStackTrace(log);
+                reply.error(new RpcException(RpcException.INTERNAL, String.valueOf(e),
+                        Map.of("javaStack", Bridge.stackTrace(e))));
+                return;
+            }
+            endRun(h);
+            reply.ok(result);
+        }, reply);
     }
 
     @FunctionalInterface
@@ -271,6 +343,7 @@ final class Workspaces {
                     h.ws.openString(contents);
                 } else {
                     h.ws.open(path, false);
+                    h.modelPath = path;
                 }
             } catch (CompilerException e) {
                 // The model loaded but its code doesn't compile. Keep the workspace so the
@@ -603,7 +676,7 @@ final class Workspaces {
         for (Handle h : all) {
             synchronized (h) {
                 if (h.run != null) {
-                    h.run.stopRequested = true;
+                    h.run.stop();
                 }
             }
             if (h.ws != null) {
@@ -676,6 +749,27 @@ final class Workspaces {
             out.add(s);
         }
         return out;
+    }
+
+    private static String optionalString(Map<String, Object> params, String name)
+            throws RpcException {
+        Object v = params.get(name);
+        if (v == null) {
+            return null;
+        }
+        if (!(v instanceof String s)) {
+            throw new RpcException(RpcException.INVALID_PARAMS, name + " must be a string");
+        }
+        return s;
+    }
+
+    private static long requiredLong(Map<String, Object> params, String name)
+            throws RpcException {
+        Long v = optionalLong(params, name);
+        if (v == null) {
+            throw new RpcException(RpcException.INVALID_PARAMS, name + " must be an integer");
+        }
+        return v;
     }
 
     private static Long optionalLong(Map<String, Object> params, String name)

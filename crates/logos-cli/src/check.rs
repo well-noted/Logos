@@ -121,7 +121,7 @@ fn compile(project: &Project, version: &str) -> Finding {
 }
 
 /// The project `logos project init --yes` would write, kept in memory.
-fn detected_project(dir: &Path) -> Result<Project, String> {
+pub fn detected_project(dir: &Path) -> Result<Project, String> {
     let model = crate::init::find_model(dir, None)?;
     let code = crate::init::model_code(dir, &model)?;
     let d = detect(dir, &model, &code);
