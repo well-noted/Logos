@@ -928,6 +928,110 @@ async fn experiments_list(
     .await
 }
 
+/// An edit to a BehaviorSpace experiment stored in the model (design 3.3, E4). Experiments
+/// are named by their current name.
+#[derive(serde::Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
+enum ExperimentOp {
+    Attr {
+        name: String,
+        attr: String,
+        value: String,
+    },
+    Text {
+        name: String,
+        part: String,
+        text: String,
+    },
+    TimeLimit {
+        name: String,
+        steps: u64,
+    },
+    Metrics {
+        name: String,
+        metrics: Vec<String>,
+    },
+    Values {
+        name: String,
+        variable: String,
+        values: Vec<String>,
+    },
+    Stepped {
+        name: String,
+        variable: String,
+        first: String,
+        step: String,
+        last: String,
+    },
+    RemoveVariable {
+        name: String,
+        variable: String,
+    },
+    Duplicate {
+        name: String,
+        new_name: String,
+    },
+    Delete {
+        name: String,
+    },
+}
+
+fn apply_experiment_op(n: &mut logos_nlogox::Nlogox, op: ExperimentOp) -> Result<(), String> {
+    let index = |n: &logos_nlogox::Nlogox, name: &str| {
+        n.experiment_index(name)
+            .ok_or_else(|| format!("no experiment named {name}"))
+    };
+    let r = match op {
+        ExperimentOp::Attr { name, attr, value } => {
+            n.set_experiment_attribute(index(n, &name)?, &attr, &value)
+        }
+        ExperimentOp::Text { name, part, text } => {
+            n.set_experiment_text(index(n, &name)?, &part, &text)
+        }
+        ExperimentOp::TimeLimit { name, steps } => {
+            n.set_experiment_time_limit(index(n, &name)?, steps)
+        }
+        ExperimentOp::Metrics { name, metrics } => {
+            n.set_experiment_metrics(index(n, &name)?, &metrics)
+        }
+        ExperimentOp::Values {
+            name,
+            variable,
+            values,
+        } => n.set_experiment_values(index(n, &name)?, &variable, &values),
+        ExperimentOp::Stepped {
+            name,
+            variable,
+            first,
+            step,
+            last,
+        } => n.set_experiment_stepped(index(n, &name)?, &variable, &first, &step, &last),
+        ExperimentOp::RemoveVariable { name, variable } => {
+            n.remove_experiment_variable(index(n, &name)?, &variable)
+        }
+        ExperimentOp::Duplicate { name, new_name } => n
+            .duplicate_experiment(index(n, &name)?, &new_name)
+            .map(|_| ()),
+        ExperimentOp::Delete { name } => n.delete_experiment(index(n, &name)?),
+    };
+    r.map_err(|e| e.to_string())
+}
+
+/// Edits an experiment in the model; one undo step, shared with interface edits.
+#[tauri::command]
+async fn experiment_edit(
+    core: CoreState<'_>,
+    id: u64,
+    op: ExperimentOp,
+) -> AppResult<session::WidgetEdit> {
+    let core = core.inner().clone();
+    blocking(move || {
+        core.sessions()?
+            .edit_widgets(id, |n| apply_experiment_op(n, op))
+    })
+    .await
+}
+
 #[tauri::command]
 async fn experiment_save_settings(
     core: CoreState<'_>,
@@ -1090,6 +1194,7 @@ fn main() {
             secrets_recent,
             experiments_list,
             experiment_save_settings,
+            experiment_edit,
             experiment_run,
             study_status,
             study_stop,

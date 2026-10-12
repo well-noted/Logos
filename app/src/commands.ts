@@ -2,7 +2,7 @@
 // (design principle 7). Shortcuts are stored per action so they can be rebound later.
 
 import {
-  activityView, applyCode, bottomOpen, bottomTab, closeModel, model, modelTab, openModelDialog,
+  activeDoc, docs, activityView, applyCode, bottomOpen, bottomTab, closeModel, model, modelTab, openModelDialog,
   paletteOpen, rightOpen, running, saveModel, settingsOpen, stepModel, stopModel, viewPopped, engine,
 } from "./state";
 import { canRedo, canUndo, editMode, undoInterface } from "./editor";
@@ -19,6 +19,9 @@ export interface Command {
 }
 
 const hasModel = () => model.value !== null;
+/** Interface edit mode, or an experiment document in front: where Ctrl+Z is Logos's undo. */
+const editingNonCode = () =>
+  editMode.value || docs.value.some((d) => d.id === activeDoc.value && d.kind === "experiment");
 
 export const COMMANDS: Command[] = [
   { id: "file.open", title: "Open model…", menu: "File", key: "Ctrl+O", run: () => openModelDialog() },
@@ -44,10 +47,10 @@ export const COMMANDS: Command[] = [
     run: () => { modelTab.value = "interface"; viewPopped.value = false; rightOpen.value = false; bottomOpen.value = true; bottomTab.value = "command"; } },
   { id: "view.layoutCodeRun", title: "Layout: Code and run", menu: "View", enabled: hasModel,
     run: () => { modelTab.value = "code"; viewPopped.value = true; rightOpen.value = true; } },
-  { id: "edit.undo", title: "Undo interface change", menu: "Edit", key: "Ctrl+Z", textKey: false,
-    enabled: () => editMode.value && canUndo.value, run: () => undoInterface(false) },
-  { id: "edit.redo", title: "Redo interface change", menu: "Edit", key: "Ctrl+Y", textKey: false,
-    enabled: () => editMode.value && canRedo.value, run: () => undoInterface(true) },
+  { id: "edit.undo", title: "Undo interface or experiment change", menu: "Edit", key: "Ctrl+Z", textKey: false,
+    enabled: () => editingNonCode() && canUndo.value, run: () => undoInterface(false) },
+  { id: "edit.redo", title: "Redo interface or experiment change", menu: "Edit", key: "Ctrl+Y", textKey: false,
+    enabled: () => editingNonCode() && canRedo.value, run: () => undoInterface(true) },
   { id: "edit.toggle", title: "Edit the interface", menu: "Edit", key: "Ctrl+E", enabled: hasModel,
     run: () => { modelTab.value = "interface"; editMode.value = !editMode.value; } },
   { id: "model.apply", title: "Apply code changes", menu: "Model", key: "Ctrl+Shift+Enter", enabled: hasModel, run: () => applyCode() },

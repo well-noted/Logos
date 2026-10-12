@@ -633,21 +633,7 @@ impl Nlogox {
         let path = self
             .section_path("widgets")
             .ok_or(EditError::NoSection("widgets".into()))?;
-        // Indent the lines inside a multi-line element like the widgets around it.
-        let indent = self
-            .widgets()
-            .first()
-            .and_then(|w| {
-                let start = w.span.start;
-                let line = self.text()[..start].rfind('\n').map_or(0, |i| i + 1);
-                let lead = &self.text()[line..start];
-                lead.chars()
-                    .all(char::is_whitespace)
-                    .then(|| lead.to_string())
-            })
-            .unwrap_or_else(|| "    ".into());
-        let xml = xml.replace('\n', &format!("\n{indent}"));
-        self.insert_element(&path, None, &xml)?;
+        self.insert_element(&path, None, xml)?;
         Ok(self.widgets().len() - 1)
     }
 

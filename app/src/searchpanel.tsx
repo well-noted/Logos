@@ -157,4 +157,3 @@ export function SearchPanel() {
     </div>
   );
 }
-

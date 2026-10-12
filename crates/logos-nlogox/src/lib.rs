@@ -8,12 +8,14 @@
 //!
 //! New text is encoded the way NetLogo 7.0.4 writes it (see [`text`]).
 
+pub mod experiments;
 pub mod text;
 mod tree;
 pub mod widgets;
 
 use std::ops::Range;
 
+pub use experiments::{ExperimentEditError, ValueSet};
 pub use text::{DecodeError, Decoded};
 pub use tree::{Attribute, Element, Node, ParseError};
 pub use widgets::{Widget, WidgetData, WidgetEditError, WidgetValue};
@@ -225,7 +227,8 @@ impl Nlogox {
     /// Inserts `xml`, one element as written, as a child of the element at `parent`: before
     /// its child element `before`, or after the last one. The new element gets its own line,
     /// indented like its siblings (or one step more than its parent), with the file's line
-    /// ends. Nothing else in the file changes.
+    /// ends; its further lines keep their indentation relative to the first. Nothing else in
+    /// the file changes.
     pub fn insert_element(
         &mut self,
         parent: &[usize],
@@ -238,12 +241,14 @@ impl Nlogox {
             .ok_or_else(|| EditError::NoSuchElement(parent.to_vec()))?;
         let nl = self.line_end();
         let children: Vec<&Element> = p.elements().collect();
-        let xml = xml.replace("\r\n", "\n").replace('\n', nl);
+        let lines = xml.replace("\r\n", "\n");
+        let indented = |indent: &str| lines.replace('\n', &format!("{nl}{indent}"));
         if let Some(first) = children.first() {
             let indent = self
                 .indent_before(first.span.start)
                 .unwrap_or("")
                 .to_string();
+            let xml = indented(&indent);
             let (at, text) = match before {
                 Some(i) => {
                     let c = children
@@ -261,6 +266,7 @@ impl Nlogox {
         // No child elements yet.
         let parent_indent = self.indent_before(p.span.start).unwrap_or("").to_string();
         let child_indent = format!("{parent_indent}  ");
+        let xml = indented(&child_indent);
         match &p.content {
             Some(content) => {
                 let inner = &self.text[content.clone()];

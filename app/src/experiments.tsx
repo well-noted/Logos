@@ -8,13 +8,17 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { signal } from "@preact/signals";
 import { Icon } from "./icons";
 import { errorText } from "./ipc";
-import { addActivity, dirty, findings, model, openDoc, saveModel, showToast } from "./state";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { addActivity, closeDoc, dirty, docs, findings, model, openDoc, saveModel, showToast } from "./state";
+import { type WidgetEdit, applyResult, canRedo, canUndo, undoInterface } from "./editor";
+import { joinLiterals, splitLiterals, steppedCount } from "./bspace";
 
 interface LogosSettings { workers: number; updatePlots: boolean; outputs: string[] }
 interface ExperimentView {
   name: string; repetitions: number; sequentialRunOrder: boolean; runMetricsEveryStep: boolean;
   setup: string; go: string; timeLimit: number; exitCondition: string; metrics: string[];
   variables: [string, string[]][]; runCount: number; settings: LogosSettings;
+  parts: string[]; valueSets: ValueSet[];
 }
 interface RunRow { run: number; settings: [string, string][]; status: string; steps: number; seconds: number; worker?: number | null; errors: string[] }
 interface StudyView {
@@ -123,14 +127,139 @@ export function ExperimentsPanel() {
 
 // ---- the experiment document (design 3.3) -------------------------------------------------
 
-export function ExperimentDoc({ name }: { name: string }) {
+type ValueSet =
+  | { kind: "enumerated"; variable: string; values: string[] }
+  | { kind: "stepped"; variable: string; first: string; step: string; last: string };
+
+type ExperimentOp =
+  | { op: "attr"; name: string; attr: string; value: string }
+  | { op: "text"; name: string; part: string; text: string }
+  | { op: "timeLimit"; name: string; steps: number }
+  | { op: "metrics"; name: string; metrics: string[] }
+  | { op: "values"; name: string; variable: string; values: string[] }
+  | { op: "stepped"; name: string; variable: string; first: string; step: string; last: string }
+  | { op: "removeVariable"; name: string; variable: string }
+  | { op: "duplicate"; name: string; newName: string }
+  | { op: "delete"; name: string };
+
+async function editExperiment(op: ExperimentOp, what: string): Promise<boolean> {
+  const m = model.value;
+  if (!m) return false;
+  try {
+    applyResult(await invoke<WidgetEdit>("experiment_edit", { id: m.id, op }));
+    addActivity(what);
+    await refreshExperiments();
+    return true;
+  } catch (e) {
+    showToast(`Can't change the experiment: ${errorText(e)}`);
+    return false;
+  }
+}
+
+/** A text field that commits when it loses focus or on Enter (Ctrl+Enter in a text area). */
+function Field({ id, value, onCommit, area, mono = true, width, disabled, label }: {
+  id: string; value: string; onCommit: (v: string) => void; area?: boolean; mono?: boolean; width?: string;
+  disabled?: boolean; label?: string;
+}) {
+  const [v, setV] = useState(value);
+  useEffect(() => setV(value), [value]);
+  const commit = () => { if (v !== value) onCommit(v); };
+  const cls = mono ? "mono" : undefined;
+  return area
+    ? <textarea id={id} class={cls} rows={Math.min(8, Math.max(2, v.split("\n").length))} value={v} disabled={disabled} aria-label={label}
+        onInput={(e) => setV((e.target as HTMLTextAreaElement).value)} onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commit(); }} />
+    : <input id={id} type="text" class={cls} style={width ? `width: ${width}` : undefined} value={v} disabled={disabled} aria-label={label}
+        onInput={(e) => setV((e.target as HTMLInputElement).value)} onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") commit(); }} />;
+}
+
+function VariableRow({ exp, vs }: { exp: string; vs: ValueSet }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const count = vs.kind === "enumerated" ? vs.values.length : steppedCount(vs.first, vs.step, vs.last);
+  const setValues = (line: string) => {
+    const parts = splitLiterals(line);
+    if (typeof parts === "string") { setProblem(parts); return; }
+    if (parts.length === 0) { setProblem("A variable needs at least one value. Remove it instead."); return; }
+    setProblem(null);
+    editExperiment({ op: "values", name: exp, variable: vs.variable, values: parts }, `Changed the values of ${vs.variable} in ${exp}`);
+  };
+  const setStepped = (k: "first" | "step" | "last", v: string) => {
+    if (vs.kind !== "stepped") return;
+    if (!Number.isFinite(Number(v))) { setProblem(`${k} must be a number.`); return; }
+    setProblem(null);
+    editExperiment({ op: "stepped", name: exp, variable: vs.variable, first: vs.first, step: vs.step, last: vs.last, [k]: v },
+      `Changed the ${k} value of ${vs.variable} in ${exp}`);
+  };
+  return (
+    <tr>
+      <td class="mono">{vs.variable}</td>
+      <td>
+        {vs.kind === "enumerated"
+          ? <Field id={`v-${vs.variable}`} label={`Values of ${vs.variable}`} value={joinLiterals(vs.values)} onCommit={setValues} width="100%" />
+          : <span class="stepped">
+              <label>first <Field id={`f-${vs.variable}`} label={`First value of ${vs.variable}`} value={vs.first} onCommit={(v) => setStepped("first", v)} width="70px" /></label>
+              <label>step <Field id={`s-${vs.variable}`} label={`Increment of ${vs.variable}`} value={vs.step} onCommit={(v) => setStepped("step", v)} width="70px" /></label>
+              <label>last <Field id={`l-${vs.variable}`} label={`Last value of ${vs.variable}`} value={vs.last} onCommit={(v) => setStepped("last", v)} width="70px" /></label>
+            </span>}
+        {problem && <div class="err" style="font-size: 12px" role="alert">{problem}</div>}
+      </td>
+      <td>{count ?? "?"}</td>
+      <td><button class="icon-btn" aria-label={`Remove ${vs.variable} from the experiment`} title="Remove"
+        onClick={() => editExperiment({ op: "removeVariable", name: exp, variable: vs.variable }, `Removed ${vs.variable} from ${exp}`)}>
+        <Icon name="close" /></button></td>
+    </tr>
+  );
+}
+
+function AddVariable({ exp, present }: { exp: string; present: string[] }) {
+  const globals = (model.value?.widgets ?? [])
+    .map((w) => ("variable" in w.data ? w.data.variable : ""))
+    .filter((v) => v && !present.some((p) => p.toLowerCase() === v.toLowerCase()));
+  const [variable, setVariable] = useState("");
+  const [values, setValues] = useState("");
+  const [problem, setProblem] = useState<string | null>(null);
+  const add = () => {
+    const name = variable.trim();
+    if (!name) { setProblem("Choose or type a variable."); return; }
+    const parts = splitLiterals(values);
+    if (typeof parts === "string") { setProblem(parts); return; }
+    if (parts.length === 0) { setProblem("Type at least one value."); return; }
+    setProblem(null);
+    editExperiment({ op: "values", name: exp, variable: name, values: parts }, `Added ${name} to ${exp}`).then((ok) => {
+      if (ok) { setVariable(""); setValues(""); }
+    });
+  };
+  return (
+    <tr>
+      <td>
+        <input type="text" class="mono" list="exp-globals" placeholder="variable" aria-label="Variable to add" value={variable}
+          style="width: 100%" onInput={(e) => setVariable((e.target as HTMLInputElement).value)} />
+        <datalist id="exp-globals">{globals.map((g) => <option value={g} />)}</datalist>
+      </td>
+      <td>
+        <input type="text" class="mono" placeholder='values, e.g. 0.1 0.2 0.3 or "a" "b"' aria-label="Values of the new variable" value={values}
+          style="width: 100%" onInput={(e) => setValues((e.target as HTMLInputElement).value)}
+          onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+        {problem && <div class="err" style="font-size: 12px" role="alert">{problem}</div>}
+      </td>
+      <td />
+      <td><button class="btn small" onClick={add}>Add</button></td>
+    </tr>
+  );
+}
+
+export function ExperimentDoc({ name, docId }: { name: string; docId?: string }) {
   const m = model.value!;
   const e = experiments.value?.find((x) => x.name === name);
   const [s, setS] = useState<LogosSettings | null>(e?.settings ?? null);
+  const [copyName, setCopyName] = useState<string | null>(null);
   useEffect(() => { if (e) setS(e.settings); }, [e?.name]);
+  if (experiments.value && !e) return <div class="doc-page"><p class="muted">The experiment {name} is no longer in the model.</p></div>;
   if (!e || !s) return <div class="doc-page"><p class="muted">Reading the experiment…</p></div>;
   const previous = past.value.filter((p) => p.experiment === name && p.complete);
   const errors = findings.value.filter((f) => f.severity === "error");
+  const has = (part: string) => e.parts.includes(part);
   const update = (patch: Partial<LogosSettings>) => {
     const next = { ...s, ...patch };
     setS(next);
@@ -146,33 +275,84 @@ export function ExperimentDoc({ name }: { name: string }) {
       openDoc({ id: `dash-${id}`, kind: "dashboard", runId: id, name });
     } catch (er) { showToast(errorText(er)); }
   };
-  const row = (label: string, v: string) => (
-    <><label>{label}</label><div class="mono" style="white-space: pre-wrap">{v || <span class="muted">(none)</span>}</div></>
-  );
+  const rename = async (to: string) => {
+    const next = to.trim();
+    if (!next || next === name) return;
+    if (await editExperiment({ op: "attr", name, attr: "name", value: next }, `Renamed experiment ${name} to ${next}`)) {
+      // The Logos settings follow the name (D-27); the old entry stays until the model is saved.
+      invoke("experiment_save_settings", { id: m.id, name: next, settings: s }).catch(() => {});
+      if (docId) docs.value = docs.value.map((d) => (d.id === docId && d.kind === "experiment" ? { ...d, name: next } : d));
+    }
+  };
+  const duplicate = async () => {
+    const to = (copyName ?? "").trim();
+    if (!to) return;
+    if (await editExperiment({ op: "duplicate", name, newName: to }, `Copied experiment ${name} to ${to}`)) {
+      invoke("experiment_save_settings", { id: m.id, name: to, settings: s }).catch(() => {});
+      setCopyName(null);
+      openDoc({ id: `exp-${to}-${Date.now()}`, kind: "experiment", name: to });
+    }
+  };
+  const remove = async () => {
+    const ok = await ask(`Delete the experiment ${name} from the model? Undo (Ctrl+Z) brings it back until you close the model.`,
+      { title: "Delete experiment", kind: "warning", okLabel: "Delete", cancelLabel: "Cancel" });
+    if (ok && (await editExperiment({ op: "delete", name }, `Deleted experiment ${name}`)) && docId) closeDoc(docId);
+  };
+  const missing = (part: string) => <span class="muted" style="font-size: 12px">Not set in this experiment. Set it once in NetLogo's BehaviorSpace dialog; Logos can't add this element yet.</span>;
   return (
-    <div class="doc-page">
-      <h2>{e.name}</h2>
-      <p class="muted">BehaviorSpace settings, as stored in the model. Editing them here comes with the interface and experiment editing step (11 and 16); until then edit them in NetLogo's BehaviorSpace dialog.</p>
-      <h3>Variables</h3>
+    <div class="doc-page experiment-editor">
+      <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+        <label for="exp-name" class="sr-only">Experiment name</label>
+        <Field id="exp-name" value={e.name} onCommit={rename} mono={false} width="260px" />
+        <span class="muted">{e.runCount} runs</span>
+        <span style="flex: 1" />
+        <button class="icon-btn" aria-label="Undo" title="Undo (Ctrl+Z)" disabled={!canUndo.value} onClick={() => undoInterface(false)}>↶</button>
+        <button class="icon-btn" aria-label="Redo" title="Redo (Ctrl+Y)" disabled={!canRedo.value} onClick={() => undoInterface(true)}>↷</button>
+        {copyName === null
+          ? <button class="btn small" onClick={() => setCopyName(`${name} copy`)}>Duplicate</button>
+          : <span style="display: flex; gap: 4px">
+              <input type="text" aria-label="Name of the copy" value={copyName} autoFocus
+                onInput={(ev) => setCopyName((ev.target as HTMLInputElement).value)}
+                onKeyDown={(ev) => { if (ev.key === "Enter") duplicate(); if (ev.key === "Escape") setCopyName(null); }} />
+              <button class="btn small" onClick={duplicate}>Copy</button>
+            </span>}
+        <button class="btn small" onClick={remove}>Delete</button>
+      </div>
+      <p class="muted" style="font-size: 12px">BehaviorSpace settings, stored in the model. Changes are unsaved until you save the model, and undo like interface changes.</p>
+
+      <h3>Vary variables as follows</h3>
       <table class="grid-table">
-        <thead><tr><th>Variable</th><th>Values</th><th>Count</th></tr></thead>
+        <thead><tr><th style="width: 22%">Variable</th><th>Values (NetLogo literals)</th><th style="width: 60px">Count</th><th style="width: 60px" /></tr></thead>
         <tbody>
-          {e.variables.map(([n, vals]) => (
-            <tr><td class="mono">{n}</td><td class="mono">{vals.length > 12 ? `${vals.slice(0, 12).join(" ")} …` : vals.join(" ")}</td><td>{vals.length}</td></tr>
-          ))}
+          {e.valueSets.map((vs) => <VariableRow exp={e.name} vs={vs} />)}
+          {has("constants") && <AddVariable exp={e.name} present={e.valueSets.map((v) => v.variable)} />}
         </tbody>
       </table>
-      <div class="form-grid" style="margin-top: 12px">
-        <label>Repetitions</label><div>{e.repetitions} ({e.sequentialRunOrder ? "sequential" : "interleaved"} run order)</div>
-        <label>Runs</label><div><strong>{e.runCount}</strong></div>
-        {row("Setup commands", e.setup)}
-        {row("Go commands", e.go)}
-        {row("Stop condition", e.exitCondition)}
-        <label>Time limit</label><div>{e.timeLimit ? `${e.timeLimit} steps` : "none"}</div>
-        <label>Measure runs</label><div>{e.runMetricsEveryStep ? "at every step" : "at the end of each run"}</div>
+
+      <div class="form-grid" style="margin-top: 12px; grid-template-columns: 200px 1fr">
+        <label for="exp-reps">Repetitions</label>
+        <div><Field id="exp-reps" value={String(e.repetitions)} width="80px"
+          onCommit={(v) => { const n = Math.floor(Number(v)); if (n >= 1) editExperiment({ op: "attr", name, attr: "repetitions", value: String(n) }, `Set repetitions of ${name} to ${n}`); else showToast("Repetitions must be 1 or more."); }} /></div>
+        <label for="exp-seq">Run combinations in sequential order</label>
+        <div><input id="exp-seq" type="checkbox" checked={e.sequentialRunOrder}
+          onChange={(ev) => editExperiment({ op: "attr", name, attr: "sequentialRunOrder", value: String((ev.target as HTMLInputElement).checked) }, `Changed the run order of ${name}`)} /></div>
+        <label for="exp-metrics">Measure runs using these reporters (one per line)</label>
+        <div><Field id="exp-metrics" area value={e.metrics.join("\n")}
+          onCommit={(v) => editExperiment({ op: "metrics", name, metrics: v.split("\n").map((x) => x.trim()).filter(Boolean) }, `Changed the metrics of ${name}`)} /></div>
+        <label for="exp-every">Measure runs at every step</label>
+        <div><input id="exp-every" type="checkbox" checked={e.runMetricsEveryStep}
+          onChange={(ev) => editExperiment({ op: "attr", name, attr: "runMetricsEveryStep", value: String((ev.target as HTMLInputElement).checked) }, `Changed when ${name} measures`)} /></div>
+        <label for="exp-setup">Setup commands</label>
+        <div>{has("setup") ? <Field id="exp-setup" area value={e.setup} onCommit={(v) => editExperiment({ op: "text", name, part: "setup", text: v }, `Changed the setup commands of ${name}`)} /> : missing("setup")}</div>
+        <label for="exp-go">Go commands</label>
+        <div>{has("go") ? <Field id="exp-go" area value={e.go} onCommit={(v) => editExperiment({ op: "text", name, part: "go", text: v }, `Changed the go commands of ${name}`)} /> : missing("go")}</div>
+        <label for="exp-stop">Stop condition</label>
+        <div>{has("exitCondition") ? <Field id="exp-stop" area value={e.exitCondition} onCommit={(v) => editExperiment({ op: "text", name, part: "exitCondition", text: v }, `Changed the stop condition of ${name}`)} /> : missing("exitCondition")}</div>
+        <label for="exp-limit">Time limit (steps, 0 for none)</label>
+        <div>{has("timeLimit") ? <Field id="exp-limit" value={String(e.timeLimit)} width="100px"
+          onCommit={(v) => { const n = Math.floor(Number(v)); if (n >= 0) editExperiment({ op: "timeLimit", name, steps: n }, `Set the time limit of ${name} to ${n}`); }} /> : missing("timeLimit")}</div>
       </div>
-      <h3>Metrics</h3>
-      <ul class="findings mono">{e.metrics.map((x) => <li>{x}</li>)}</ul>
+
       <h3>Logos settings</h3>
       <p class="muted">Saved in <span class="mono">{m.name.replace(/\.nlogox$/i, "")}.experiments.toml</span> next to the model, not in the model (D-27).</p>
       <div class="form-grid">
@@ -188,6 +368,7 @@ export function ExperimentDoc({ name }: { name: string }) {
         <span><strong>{e.runCount}</strong> runs</span>
         {previous.length > 0 && <span class="muted">Ran before: {previous.length} time{previous.length > 1 ? "s" : ""}</span>}
         <span class={errors.length ? "err" : "ok"}>{errors.length ? `✕ ${errors.length} problem${errors.length > 1 ? "s" : ""} from logos check` : "✓ logos check found no errors"}</span>
+        {dirty.value && <span class="muted">The model is saved before the run starts.</span>}
         <span style="flex:1" />
         <button class="btn primary" onClick={run}><Icon name="play" /> Run</button>
       </div>

@@ -363,3 +363,8 @@ pre.log { max-height: 160px; overflow: auto; font-size: 11px; background: var(--
 .diff .d-added { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .diff .d-removed { background: color-mix(in srgb, var(--error) 16%, transparent); text-decoration: line-through; text-decoration-color: var(--text-muted); }
 .diff .d-skipped { color: var(--text-muted); font-style: italic; }
+
+/* Experiment editor */
+.experiment-editor textarea, .experiment-editor .form-grid input[type="text"] { width: 100%; min-width: 0; box-sizing: border-box; }
+.experiment-editor .stepped { display: flex; gap: 10px; flex-wrap: wrap; }
+.experiment-editor .stepped label { font-size: 12px; color: var(--text-muted); display: flex; gap: 4px; align-items: center; }
