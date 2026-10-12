@@ -247,4 +247,26 @@ class ExperimentTest {
                     params("workspace", ws, "source", "set counter 0")));
         }
     }
+
+    @Test
+    void sendsProgressWhileARunGoesOn() throws Exception {
+        try (TestClient c = new TestClient()) {
+            long ws = open(c);
+            long id = (Long) load(c, ws, "endless").get("experiment");
+            long request = c.send("experiment.run",
+                    params("workspace", ws, "experiment", id, "runNumber", 1L));
+            Map<String, Object> start = c.awaitNotification("experiment.progress");
+            assertEquals(0L, start.get("steps"));
+            Map<String, Object> first = c.awaitNotification("experiment.progress");
+            Map<String, Object> second = c.awaitNotification("experiment.progress");
+            TestClient.result(c.call("workspace.stop", params("workspace", ws)));
+            TestClient.result(c.await(request));
+            assertEquals(id, first.get("experiment"));
+            assertEquals(1L, first.get("runNumber"));
+            assertTrue((Long) second.get("steps") > (Long) first.get("steps"));
+            // At most one every 250 ms.
+            double gap = (Double) second.get("elapsedMillis") - (Double) first.get("elapsedMillis");
+            assertTrue(gap >= 249, "gap " + gap);
+        }
+    }
 }

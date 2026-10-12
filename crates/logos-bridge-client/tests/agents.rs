@@ -112,10 +112,7 @@ fn a5_agent_state_with_10000_turtles() {
     assert!(ws.compiled, "{:?}", ws.errors);
     let ws = ws.workspace;
     let agents = |max_fps: f64| RunStreams {
-        agents: Some(StreamRate {
-            every_ticks: 1,
-            max_fps,
-        }),
+        agents: Some(StreamRate::new(max_fps)),
         ..RunStreams::default()
     };
 

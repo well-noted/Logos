@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 class BridgeTest {
     private static final String HELLO =
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"engine.hello\","
-                    + "\"params\":{\"protocolVersion\":0,\"client\":\"test\"}}";
+                    + "\"params\":{\"protocolVersion\":1,\"client\":\"test\"}}";
 
     /** Result of running the bridge over a fixed list of client messages. */
     private record Session(int exitCode, List<Map<String, Object>> responses, String log) {
@@ -72,7 +72,7 @@ class BridgeTest {
         assertEquals(1, s.responses().size());
         assertEquals(1L, s.response(0).get("id"));
         Map<String, Object> result = s.result(0);
-        assertEquals(0L, result.get("protocolVersion"));
+        assertEquals(Bridge.PROTOCOL_VERSION, result.get("protocolVersion"));
         assertEquals(System.getProperty("java.version"), result.get("javaVersion"));
         assertEquals(System.getProperty("logos.netlogoVersion"), result.get("netlogoVersion"));
         assertTrue(s.log().contains("stdin closed"));
@@ -96,7 +96,7 @@ class BridgeTest {
         assertEquals(1, s.responses().size(), "nothing is read after the mismatch");
         Map<String, Object> error = s.error(0);
         assertEquals((long) RpcException.PROTOCOL_MISMATCH, error.get("code"));
-        assertEquals(Map.of("bridge", 0L, "client", 99L), error.get("data"));
+        assertEquals(Map.of("bridge", Bridge.PROTOCOL_VERSION, "client", 99L), error.get("data"));
     }
 
     @Test
@@ -138,7 +138,7 @@ class BridgeTest {
         assertEquals((long) RpcException.INVALID_REQUEST, s.error(4).get("code"));
         assertEquals((long) RpcException.INVALID_PARAMS, s.error(5).get("code"));
         assertEquals((long) RpcException.INVALID_PARAMS, s.error(6).get("code"));
-        assertEquals(0L, s.result(7).get("protocolVersion"));
+        assertEquals(Bridge.PROTOCOL_VERSION, s.result(7).get("protocolVersion"));
     }
 
     @Test

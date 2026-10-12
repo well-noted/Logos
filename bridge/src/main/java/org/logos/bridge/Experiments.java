@@ -72,6 +72,8 @@ final class Experiments {
         final List<Object> errors = new ArrayList<>();
         long steps;
         boolean completed;
+        /** Told the step count after each step; on the run's own thread. */
+        java.util.function.LongConsumer onStep = n -> {};
     }
 
     /** Routes the Worker's events to the run active in each workspace. */
@@ -100,6 +102,7 @@ final class Experiments {
             RunState s = active.get(w);
             if (s != null) {
                 s.steps = step;
+                s.onStep.accept(step);
             }
         }
 
@@ -228,9 +231,11 @@ final class Experiments {
     /**
      * Runs one run of a loaded experiment in {@code ws}. {@code onStart} receives a function
      * that stops the run after its current step, the way stopping a BehaviorSpace run does.
+     * {@code onStep} is told the number of steps taken after each step.
      */
     Map<String, Object> run(HeadlessWorkspace ws, long id, long runNumber, boolean updatePlots,
-            Consumer<Runnable> onStart) throws RpcException {
+            Consumer<Runnable> onStart, java.util.function.LongConsumer onStep)
+            throws RpcException {
         Loaded l = experiment(id);
         if (runNumber < 1 || runNumber > l.runs.size()) {
             throw new RpcException(RpcException.INVALID_PARAMS,
@@ -239,6 +244,7 @@ final class Experiments {
         scala.collection.immutable.List<Tuple2<String, Object>> settings =
                 l.runs.get((int) runNumber - 1);
         RunState state = new RunState();
+        state.onStep = onStep;
         Worker.Runner runner = l.worker.new Runner((int) runNumber, settings, () -> ws);
         onStart.accept(() -> runner.aborted_$eq(true));
         boolean plots = ws.shouldUpdatePlots();

@@ -18,11 +18,17 @@ class AgentStateTest {
     private static final String CODE = """
             breed [ cats cat ]
             breed [ dogs dog ]
+            directed-link-breed [ roads road ]
+            undirected-link-breed [ paths path ]
             to setup
               clear-all
               create-dogs 3 [ setxy random-xcor random-ycor set color red ]
               create-cats 2 [ set color [ 10 20 30 ] set size 2.5 ]
               create-turtles 1 [ hide-turtle ]
+              ask turtle 0 [
+                create-road-to turtle 1 [ set color green set thickness 0.25 ]
+                create-path-with turtle 2 [ hide-link ]
+              ]
               ask patch -5 5 [ set pcolor blue ]
               ask patch 0 0 [ set pcolor [ 1 2 3 ] ]
               reset-ticks
@@ -67,7 +73,9 @@ class AgentStateTest {
     private record Frame(int type, long workspace, long run, long sequence, double ticks,
             int minPxcor, int maxPxcor, int minPycor, int maxPycor, int[] patchRgba,
             double[] who, double[] xcor, double[] ycor, double[] heading, int[] colorRgba,
-            double[] size, int[] shape, int[] breed, boolean[] hidden) {
+            double[] size, int[] shape, int[] breed, boolean[] hidden,
+            double[] end1, double[] end2, int[] linkColorRgba, double[] thickness,
+            int[] linkShape, int[] linkBreed, boolean[] linkHidden, boolean[] directed) {
         static Frame decode(byte[] bytes) {
             ByteBuffer b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
             int type = b.get();
@@ -75,6 +83,7 @@ class AgentStateTest {
             long run = Integer.toUnsignedLong(b.getInt());
             long seq = b.getLong();
             double ticks = b.getDouble();
+            assertEquals(1, b.get(), "layout version");
             int patches = b.getInt();
             int minX = b.getInt();
             int maxX = b.getInt();
@@ -104,13 +113,38 @@ class AgentStateTest {
             for (int i = 0; i < n; i++) {
                 breed[i] = Short.toUnsignedInt(b.getShort());
             }
-            boolean[] hidden = new boolean[n];
-            for (int i = 0; i < n; i++) {
-                hidden[i] = b.get() != 0;
+            boolean[] hidden = bools(b, n);
+            int links = b.getInt();
+            double[] end1 = doubles(b, links);
+            double[] end2 = doubles(b, links);
+            int[] linkColor = new int[links];
+            for (int i = 0; i < links; i++) {
+                linkColor[i] = b.order(ByteOrder.BIG_ENDIAN).getInt();
             }
+            b.order(ByteOrder.LITTLE_ENDIAN);
+            double[] thickness = doubles(b, links);
+            int[] linkShape = new int[links];
+            for (int i = 0; i < links; i++) {
+                linkShape[i] = Short.toUnsignedInt(b.getShort());
+            }
+            int[] linkBreed = new int[links];
+            for (int i = 0; i < links; i++) {
+                linkBreed[i] = Short.toUnsignedInt(b.getShort());
+            }
+            boolean[] linkHidden = bools(b, links);
+            boolean[] directed = bools(b, links);
             assertEquals(0, b.remaining(), "no bytes left over");
             return new Frame(type, ws, run, seq, ticks, minX, maxX, minY, maxY, patchRgba,
-                    who, x, y, heading, color, size, shape, breed, hidden);
+                    who, x, y, heading, color, size, shape, breed, hidden, end1, end2,
+                    linkColor, thickness, linkShape, linkBreed, linkHidden, directed);
+        }
+
+        private static boolean[] bools(ByteBuffer b, int n) {
+            boolean[] out = new boolean[n];
+            for (int i = 0; i < n; i++) {
+                out[i] = b.get() != 0;
+            }
+            return out;
         }
 
         private static double[] doubles(ByteBuffer b, int n) {
@@ -178,6 +212,19 @@ class AgentStateTest {
             assertEquals(List.of(false, false, false, false, false, true),
                     List.of(f.hidden()[0], f.hidden()[1], f.hidden()[2], f.hidden()[3],
                             f.hidden()[4], f.hidden()[5]));
+
+            // Links by end1, then end2: the road 0 -> 1, then the path 0 - 2.
+            assertEquals(2, f.end1().length);
+            assertEquals(List.of(0.0, 0.0), List.of(f.end1()[0], f.end1()[1]));
+            assertEquals(List.of(1.0, 2.0), List.of(f.end2()[0], f.end2()[1]));
+            assertEquals(rgba(Color.getARGBbyPremodulatedColorNumber(55.0)), f.linkColorRgba()[0]);
+            assertEquals(0.25, f.thickness()[0]);
+            assertEquals(0.0, f.thickness()[1]);
+            // links = 0, then link breeds in declaration order: roads = 1, paths = 2.
+            assertEquals(List.of(1, 2), List.of(f.linkBreed()[0], f.linkBreed()[1]));
+            assertEquals(List.of(false, true), List.of(f.linkHidden()[0], f.linkHidden()[1]));
+            assertEquals(List.of(true, false), List.of(f.directed()[0], f.directed()[1]));
+            assertEquals(List.of(0, 0), List.of(f.linkShape()[0], f.linkShape()[1]));
         }
     }
 

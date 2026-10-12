@@ -18,7 +18,7 @@ pub use frame::{Frame, FrameError, Kind, read_frame, write_frame};
 pub use value::NlValue;
 
 /// Protocol version implemented by this crate (PROTOCOL.md header).
-pub const PROTOCOL_VERSION: u64 = 0;
+pub const PROTOCOL_VERSION: u64 = 1;
 
 // ---------------------------------------------------------------- envelopes
 
@@ -182,6 +182,24 @@ pub struct OpenParams<'a> {
 pub struct CommandParams<'a> {
     pub workspace: WorkspaceId,
     pub source: &'a str,
+    /// Frames to send after the commands when no run is active (G15).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<SnapshotSpec>,
+}
+
+/// Which frames a snapshot sends (protocol 1, G15).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct SnapshotSpec {
+    pub view: bool,
+    pub agents: bool,
+}
+
+/// Params of `workspace.snapshot`.
+#[derive(Debug, Serialize)]
+pub struct SnapshotParams {
+    pub workspace: WorkspaceId,
+    pub view: bool,
+    pub agents: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -212,6 +230,35 @@ pub struct RunStreams {
 pub struct StreamRate {
     pub every_ticks: u64,
     pub max_fps: f64,
+    /// Per iteration, or only when the tick counter changed (NetLogo's "on ticks").
+    #[serde(skip_serializing_if = "StreamUpdate::is_default")]
+    pub update: StreamUpdate,
+}
+
+impl StreamRate {
+    /// `every_ticks` 1 at `max_fps`, sent per iteration.
+    pub fn new(max_fps: f64) -> StreamRate {
+        StreamRate {
+            every_ticks: 1,
+            max_fps,
+            update: StreamUpdate::Iteration,
+        }
+    }
+}
+
+/// When a stream sends frames (protocol 1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamUpdate {
+    #[default]
+    Iteration,
+    Ticks,
+}
+
+impl StreamUpdate {
+    fn is_default(&self) -> bool {
+        *self == StreamUpdate::Iteration
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -222,11 +269,86 @@ pub struct ObserveStream {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunParams<'a> {
     pub workspace: WorkspaceId,
     pub source: &'a str,
     pub repeat: Option<u64>,
     pub stream: &'a RunStreams,
+    /// Pause after each iteration, in milliseconds (G2).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub delay_millis: f64,
+    /// NetLogo's speed slider position, -50 (slowest) to 50 (fastest); `None` runs unpaced
+    /// (G2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
+    /// A reporter checked after each iteration; the run ends when it reports true (G6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_when: Option<&'a str>,
+    /// Who runs the command. Only the observer in Phase 2 (D-26).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents: Option<RunAgents>,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
+/// The agents a run's command runs as (D-26): `{ "kind": "observer" }` until agent forever
+/// buttons come.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunAgents {
+    pub kind: String,
+}
+
+/// Options of a run beyond its command and streams (protocol 1).
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions {
+    pub delay_millis: f64,
+    /// NetLogo's speed slider, -50 to 50; `None` for no pacing.
+    pub speed: Option<f64>,
+    pub stop_when: Option<String>,
+}
+
+/// Changes to a run in progress (`workspace.runSettings`, G2). `None` leaves a setting as
+/// it is.
+#[derive(Debug, Clone, Default)]
+pub struct RunSettings {
+    pub delay_millis: Option<f64>,
+    /// `Some(None)` stops pacing; `Some(Some(s))` paces as NetLogo's slider at `s`.
+    pub speed: Option<Option<f64>>,
+    /// `Some(None)` removes the stop condition.
+    pub stop_when: Option<Option<String>>,
+    /// `Some(None)` stops the stream.
+    pub view: Option<Option<StreamRate>>,
+    pub agents: Option<Option<StreamRate>>,
+}
+
+impl RunSettings {
+    /// The `workspace.runSettings` params.
+    pub fn params(&self, workspace: WorkspaceId) -> Json {
+        let mut p = serde_json::json!({ "workspace": workspace });
+        if let Some(d) = self.delay_millis {
+            p["delayMillis"] = serde_json::json!(d);
+        }
+        if let Some(s) = self.speed {
+            p["speed"] = serde_json::json!(s);
+        }
+        if let Some(w) = &self.stop_when {
+            p["stopWhen"] = serde_json::json!(w);
+        }
+        if self.view.is_some() || self.agents.is_some() {
+            let mut stream = serde_json::Map::new();
+            if let Some(v) = self.view {
+                stream.insert("view".into(), serde_json::to_value(v).unwrap_or_default());
+            }
+            if let Some(a) = self.agents {
+                stream.insert("agents".into(), serde_json::to_value(a).unwrap_or_default());
+            }
+            p["stream"] = Json::Object(stream);
+        }
+        p
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -240,6 +362,8 @@ pub enum RunEnd {
     Halted,
     /// A runtime error.
     Error,
+    /// The run's `stopWhen` reporter reported true (protocol 1, G6).
+    Condition,
 }
 
 /// The `run.finished` notification.
@@ -383,6 +507,116 @@ pub struct CheckResult {
     pub errors: Vec<ModelError>,
 }
 
+/// Params of `workspace.recompile` (protocol 1, G5).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecompileParams<'a> {
+    pub workspace: WorkspaceId,
+    pub source: &'a str,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub dry_run: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface_globals: Option<&'a [String]>,
+}
+
+/// Result of `workspace.recompile`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecompileResult {
+    pub applied: bool,
+    pub world_cleared: bool,
+    pub losses: Vec<Loss>,
+}
+
+/// Something the world loses when new code is installed: a breed (its agents die) or a
+/// variable (its values are lost).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Loss {
+    /// `breed`, `linkBreed`, `global`, `turtleVariable`, `patchVariable`, `linkVariable` or
+    /// `breedVariable`.
+    pub kind: String,
+    /// Upper case, as NetLogo stores it.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breed: Option<String>,
+    /// For a breed: how many agents die.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<u64>,
+}
+
+/// Result of `workspace.plots` (protocol 1, G4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlotsResult {
+    pub plots: Vec<Plot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Plot {
+    pub name: String,
+    pub x_min: f64,
+    pub x_max: f64,
+    pub y_min: f64,
+    pub y_max: f64,
+    pub auto_plot_x: bool,
+    pub auto_plot_y: bool,
+    pub legend: bool,
+    pub pens: Vec<PlotPen>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlotPen {
+    pub name: String,
+    /// ARGB.
+    pub color: u32,
+    /// 0 line, 1 bar, 2 point.
+    pub mode: u8,
+    pub interval: f64,
+    pub hidden: bool,
+    pub in_legend: bool,
+    pub temporary: bool,
+    /// The points start from the pen's first: earlier ones the client has are gone.
+    pub reset: bool,
+    /// x, y, pen down, ARGB color.
+    pub points: Vec<(f64, f64, bool, u32)>,
+}
+
+/// The `run.plots` notification: plot changes since the last plots sent (G4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunPlots {
+    pub workspace: WorkspaceId,
+    /// 0 after a command or snapshot.
+    pub run: u64,
+    pub ticks: Option<f64>,
+    pub plots: Vec<PlotChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlotChange {
+    pub name: String,
+    pub x_min: f64,
+    pub x_max: f64,
+    pub y_min: f64,
+    pub y_max: f64,
+    pub pens: Vec<PlotPen>,
+    pub removed_pens: Vec<String>,
+}
+
+/// The `experiment.progress` notification (protocol 1, G11).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExperimentProgress {
+    pub workspace: WorkspaceId,
+    pub experiment: u64,
+    pub run_number: u64,
+    pub steps: u64,
+    pub ticks: Option<f64>,
+    pub elapsed_millis: f64,
+}
+
 /// Params of `workspace.references`.
 #[derive(Debug, Serialize)]
 pub struct ReferencesParams<'a> {
@@ -519,6 +753,7 @@ mod tests {
             CommandParams {
                 workspace: WorkspaceId(1),
                 source: "setup",
+                snapshot: None,
             },
         );
         assert_eq!(
@@ -563,15 +798,64 @@ mod tests {
     }
 
     #[test]
+    fn protocol_one_messages() {
+        let plots: PlotsResult = serde_json::from_value(json!({"plots":[{"name":"Noise",
+            "xMin":0.0,"xMax":10.0,"yMin":0.0,"yMax":100.0,"autoPlotX":true,"autoPlotY":true,
+            "legend":true,"pens":[{"name":"random","color":4291767081u32,"mode":0,
+            "interval":1.0,"hidden":false,"inLegend":true,"temporary":false,"reset":true,
+            "points":[[0.0,42.0,true,4291767081u32]]}]}]}))
+        .unwrap();
+        assert_eq!(
+            plots.plots[0].pens[0].points[0],
+            (0.0, 42.0, true, 4291767081)
+        );
+        let change: RunPlots = serde_json::from_value(json!({"workspace":1,"run":0,"ticks":null,
+            "plots":[{"name":"Noise","xMin":0.0,"xMax":10.0,"yMin":0.0,"yMax":100.0,"pens":[],
+            "removedPens":["temp"]}]}))
+        .unwrap();
+        assert_eq!(change.plots[0].removed_pens, ["temp"]);
+        let r: RecompileResult = serde_json::from_value(json!({"applied":false,
+            "worldCleared":false,"losses":[{"kind":"breed","name":"DOGS","agents":2},
+            {"kind":"breedVariable","breed":"CATS","name":"AGE"}]}))
+        .unwrap();
+        assert_eq!(r.losses[0].agents, Some(2));
+        assert_eq!(r.losses[1].breed.as_deref(), Some("CATS"));
+        let p = serde_json::to_value(RecompileParams {
+            workspace: WorkspaceId(1),
+            source: "to go end",
+            dry_run: true,
+            interface_globals: None,
+        })
+        .unwrap();
+        assert_eq!(p, json!({"workspace":1,"source":"to go end","dryRun":true}));
+        let settings = RunSettings {
+            speed: Some(None),
+            stop_when: Some(Some("ticks > 5".into())),
+            view: Some(None),
+            ..RunSettings::default()
+        };
+        assert_eq!(
+            settings.params(WorkspaceId(2)),
+            json!({"workspace":2,"speed":null,"stopWhen":"ticks > 5","stream":{"view":null}})
+        );
+        let progress: ExperimentProgress = serde_json::from_value(json!({"workspace":1,
+            "experiment":3,"runNumber":2,"steps":40,"ticks":40.0,"elapsedMillis":251.5}))
+        .unwrap();
+        assert_eq!((progress.run_number, progress.steps), (2, 40));
+    }
+
+    #[test]
     fn run_params_and_finished_notification() {
         let streams = RunStreams {
             view: Some(StreamRate {
                 every_ticks: 1,
                 max_fps: 30.0,
+                update: Default::default(),
             }),
             agents: Some(StreamRate {
                 every_ticks: 2,
                 max_fps: 10.0,
+                update: Default::default(),
             }),
             observe: None,
         };
@@ -580,12 +864,41 @@ mod tests {
             source: "go",
             repeat: None,
             stream: &streams,
+            delay_millis: 0.0,
+            speed: None,
+            stop_when: None,
+            agents: None,
         };
         assert_eq!(
             serde_json::to_value(&p).unwrap(),
             json!({"workspace":2,"source":"go","repeat":null,
                    "stream":{"view":{"everyTicks":1,"maxFps":30.0},
                              "agents":{"everyTicks":2,"maxFps":10.0}}})
+        );
+        // Protocol 1 fields appear only when set.
+        let on_ticks = RunStreams {
+            view: Some(StreamRate {
+                update: StreamUpdate::Ticks,
+                ..StreamRate::new(30.0)
+            }),
+            agents: None,
+            observe: None,
+        };
+        let p = RunParams {
+            workspace: WorkspaceId(2),
+            source: "go",
+            repeat: None,
+            stream: &on_ticks,
+            delay_millis: 50.0,
+            speed: Some(-10.0),
+            stop_when: Some("count turtles = 0"),
+            agents: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&p).unwrap(),
+            json!({"workspace":2,"source":"go","repeat":null,
+                   "stream":{"view":{"everyTicks":1,"maxFps":30.0,"update":"ticks"}},
+                   "delayMillis":50.0,"speed":-10.0,"stopWhen":"count turtles = 0"})
         );
         let f: RunFinished = serde_json::from_value(json!({"workspace":2,"run":1,
             "reason":"stopped","iterations":551,"ticks":551.0,"elapsedMillis":9000.5,

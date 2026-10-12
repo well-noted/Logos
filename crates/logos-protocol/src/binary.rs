@@ -25,7 +25,10 @@ pub struct ViewFrame {
     pub rgba: Vec<u8>,
 }
 
-/// Patch colors and turtle variables (section 6.2, Phase 0 layout).
+/// The agent-state layout version this crate reads (section 6.2, protocol 1).
+pub const AGENT_LAYOUT_VERSION: u8 = 1;
+
+/// Patch colors, turtle variables and link variables (section 6.2, layout version 1).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentFrame {
     pub workspace: u32,
@@ -40,6 +43,34 @@ pub struct AgentFrame {
     /// R, G, B, A bytes per patch, row-major from the top-left patch.
     pub patch_rgba: Vec<u8>,
     pub turtles: TurtleColumns,
+    pub links: LinkColumns,
+}
+
+/// One entry per link in each column, ordered by `end1`, `end2` and breed.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LinkColumns {
+    /// `who` of each end.
+    pub end1: Vec<f64>,
+    pub end2: Vec<f64>,
+    /// R, G, B, A.
+    pub color: Vec<[u8; 4]>,
+    pub thickness: Vec<f64>,
+    /// Index into the model's link shapes: "default" first, then by name.
+    pub shape: Vec<u16>,
+    /// 0 for `links`, then link breeds in declaration order from 1.
+    pub breed: Vec<u16>,
+    pub hidden: Vec<bool>,
+    pub directed: Vec<bool>,
+}
+
+impl LinkColumns {
+    pub fn len(&self) -> usize {
+        self.end1.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.end1.is_empty()
+    }
 }
 
 /// One entry per turtle in each column, in `who` order.
@@ -131,6 +162,12 @@ impl DataFrame {
                     bytes: payload,
                     at: HEADER_BYTES,
                 };
+                let version = r.take(1)?[0];
+                if version != AGENT_LAYOUT_VERSION {
+                    return Err(DataFrameError::Agents(format!(
+                        "layout version {version}, expected {AGENT_LAYOUT_VERSION}"
+                    )));
+                }
                 let patch_count = r.u32()? as usize;
                 let (min_pxcor, max_pxcor) = (r.i32()?, r.i32()?);
                 let (min_pycor, max_pycor) = (r.i32()?, r.i32()?);
@@ -141,15 +178,22 @@ impl DataFrame {
                     xcor: r.f64s(n)?,
                     ycor: r.f64s(n)?,
                     heading: r.f64s(n)?,
-                    color: r
-                        .take(n * 4)?
-                        .chunks_exact(4)
-                        .map(|c| [c[0], c[1], c[2], c[3]])
-                        .collect(),
+                    color: r.rgba(n)?,
                     size: r.f64s(n)?,
                     shape: r.u16s(n)?,
                     breed: r.u16s(n)?,
-                    hidden: r.take(n)?.iter().map(|&b| b != 0).collect(),
+                    hidden: r.bools(n)?,
+                };
+                let m = r.u32()? as usize;
+                let links = LinkColumns {
+                    end1: r.f64s(m)?,
+                    end2: r.f64s(m)?,
+                    color: r.rgba(m)?,
+                    thickness: r.f64s(m)?,
+                    shape: r.u16s(m)?,
+                    breed: r.u16s(m)?,
+                    hidden: r.bools(m)?,
+                    directed: r.bools(m)?,
                 };
                 if r.at != payload.len() {
                     return Err(DataFrameError::Agents(format!(
@@ -168,6 +212,7 @@ impl DataFrame {
                     max_pycor,
                     patch_rgba: patch_rgba.to_vec(),
                     turtles,
+                    links,
                 })))
             }
             other => Err(DataFrameError::UnknownType(other)),
@@ -215,6 +260,18 @@ impl<'a> Reader<'a> {
             .chunks_exact(8)
             .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
             .collect())
+    }
+
+    fn rgba(&mut self, n: usize) -> Result<Vec<[u8; 4]>, DataFrameError> {
+        let bytes = self.take(n.checked_mul(4).ok_or_else(self.overflow())?)?;
+        Ok(bytes
+            .chunks_exact(4)
+            .map(|c| [c[0], c[1], c[2], c[3]])
+            .collect())
+    }
+
+    fn bools(&mut self, n: usize) -> Result<Vec<bool>, DataFrameError> {
+        Ok(self.take(n)?.iter().map(|&b| b != 0).collect())
     }
 
     fn u16s(&mut self, n: usize) -> Result<Vec<u16>, DataFrameError> {
@@ -292,6 +349,7 @@ mod tests {
         b.extend_from_slice(&1u32.to_le_bytes());
         b.extend_from_slice(&0u64.to_le_bytes());
         b.extend_from_slice(&4.0f64.to_le_bytes());
+        b.push(AGENT_LAYOUT_VERSION);
         b.extend_from_slice(&2u32.to_le_bytes());
         for c in [0i32, 1, 0, 0] {
             b.extend_from_slice(&c.to_le_bytes());
@@ -308,6 +366,17 @@ mod tests {
             b.extend_from_slice(&v.to_le_bytes());
         }
         for v in [0u16, 3, 2, 1] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&[0, 1]);
+        // One link, a directed one from turtle 0 to turtle 1.
+        b.extend_from_slice(&1u32.to_le_bytes());
+        for v in [0.0f64, 1.0] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&[44, 209, 59, 255]);
+        b.extend_from_slice(&0.25f64.to_le_bytes());
+        for v in [0u16, 1] {
             b.extend_from_slice(&v.to_le_bytes());
         }
         b.extend_from_slice(&[0, 1]);
@@ -338,6 +407,23 @@ mod tests {
         assert_eq!(t.shape, [0, 3]);
         assert_eq!(t.breed, [2, 1]);
         assert_eq!(t.hidden, [false, true]);
+        let l = &a.links;
+        assert_eq!(l.len(), 1);
+        assert_eq!((l.end1[0], l.end2[0]), (0.0, 1.0));
+        assert_eq!(l.color, [[44, 209, 59, 255]]);
+        assert_eq!(l.thickness, [0.25]);
+        assert_eq!((l.shape[0], l.breed[0]), (0, 1));
+        assert_eq!((l.hidden[0], l.directed[0]), (false, true));
+    }
+
+    #[test]
+    fn rejects_another_layout_version() {
+        let mut old = encode_agents();
+        old[HEADER_BYTES] = 0;
+        assert!(matches!(
+            DataFrame::decode(&old),
+            Err(DataFrameError::Agents(_))
+        ));
     }
 
     #[test]
@@ -360,7 +446,7 @@ mod tests {
         ));
         // A huge turtle count must fail cleanly, not allocate or panic.
         let mut huge = good;
-        let at = HEADER_BYTES + 20 + 8;
+        let at = HEADER_BYTES + 1 + 20 + 8;
         huge[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(DataFrame::decode(&huge).is_err());
     }

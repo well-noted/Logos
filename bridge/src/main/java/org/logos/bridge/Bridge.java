@@ -20,7 +20,7 @@ import java.util.Map;
  */
 public final class Bridge {
     /** Protocol version implemented by this bridge (PROTOCOL.md header). */
-    public static final long PROTOCOL_VERSION = 0;
+    public static final long PROTOCOL_VERSION = 1;
 
     /** Process exit codes. */
     public static final int EXIT_OK = 0;
