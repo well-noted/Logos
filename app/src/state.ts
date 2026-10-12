@@ -2,6 +2,7 @@
 // call the host.
 
 import { computed, signal } from "@preact/signals";
+import { checkRecovery } from "./recovery";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog, ask, message } from "@tauri-apps/plugin-dialog";
 import {
@@ -223,6 +224,7 @@ export async function openModel(path: string) {
   try {
     const view = await ipc.open(path);
     loadView(view);
+    void checkRecovery(view.id, view.name);
     settings.value = await ipc.settingsGet();
     addActivity(`Opened ${view.name}`);
   } catch (e) {

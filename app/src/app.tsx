@@ -2,6 +2,7 @@
 // with its Interface, Info and Code tabs, the right and bottom panels, and the status bar.
 
 import { useEffect, useRef, useState } from "preact/hooks";
+import { RecoveryDialog } from "./recovery";
 import { COMMANDS, runCommand, type Command } from "./commands";
 import { Icon } from "./icons";
 import { InterfaceTab, PopOutView } from "./interface";
@@ -170,6 +171,7 @@ export function App() {
       {m && viewPopped.value && <PopOutView />}
       {paletteOpen.value && <Palette />}
       {settingsOpen.value && <SettingsDialog />}
+      <RecoveryDialog />
       {toast.value && <div class="toast" role="alert">{toast.value}</div>}
     </>
   );

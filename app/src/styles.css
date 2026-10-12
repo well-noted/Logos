@@ -352,3 +352,14 @@ pre.log { max-height: 160px; overflow: auto; font-size: 11px; background: var(--
 .search-results mark.old { text-decoration: line-through; }
 .search-results mark.new { outline: 1px solid var(--accent); margin-left: 1px; }
 .statusbar svg { width: 12px; height: 12px; vertical-align: -2px; }
+
+/* Recovery dialog */
+.settings.recovery { width: min(760px, 94vw); }
+.diff { margin: 0; max-height: 50vh; overflow: auto; font-family: var(--code-font); font-size: 12px; background: var(--code-bg);
+  border: 1px solid var(--border); border-radius: 4px; padding: 4px 0; white-space: pre; }
+.diff > div { padding: 0 8px; }
+.diff .ln { display: inline-block; width: 44px; color: var(--text-muted); text-align: right; margin-right: 8px; }
+.diff .sign { display: inline-block; width: 14px; }
+.diff .d-added { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.diff .d-removed { background: color-mix(in srgb, var(--error) 16%, transparent); text-decoration: line-through; text-decoration-color: var(--text-muted); }
+.diff .d-skipped { color: var(--text-muted); font-style: italic; }

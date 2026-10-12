@@ -8,6 +8,7 @@ mod experiments;
 mod git;
 mod lsp;
 mod project;
+mod recovery;
 mod session;
 mod settings;
 mod values;
@@ -51,6 +52,10 @@ struct Core {
     settings: Mutex<Settings>,
     engine: Mutex<EngineStatus>,
     sessions: Mutex<Option<Arc<Sessions>>>,
+    autosaves: recovery::Autosaves,
+    /// Models opened with an autosaved copy the user hasn't restored or discarded yet; their
+    /// copies are kept until then.
+    pending_recovery: Mutex<std::collections::HashSet<PathBuf>>,
     emit: Emit,
 }
 
@@ -59,6 +64,53 @@ impl Core {
         self.sessions.lock().unwrap().clone().ok_or_else(|| {
             AppError::new("NetLogo isn't running yet. Check the engine on the start screen.")
         })
+    }
+
+    /// Copies unsaved models to the app data folder, and removes the copies of models that
+    /// have none (D-24).
+    fn autosave(&self) {
+        let Some(sessions) = self.sessions.lock().unwrap().clone() else {
+            return;
+        };
+        let pending = self.pending_recovery.lock().unwrap().clone();
+        for (path, text, dirty) in sessions.texts() {
+            if dirty {
+                if let Err(e) = self.autosaves.write(&path, &text) {
+                    eprintln!("autosave of {} failed: {e}", path.display());
+                }
+            } else if !pending.contains(&path) {
+                self.autosaves.remove(&path);
+            }
+        }
+    }
+
+    /// Every second: models changed on disk by other programs (I5); every 30 seconds:
+    /// autosave.
+    fn watch(self: Arc<Self>) {
+        let mut n = 0u32;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            n += 1;
+            let sessions = self.sessions.lock().unwrap().clone();
+            if let Some(sessions) = sessions {
+                for change in sessions.disk_changes() {
+                    if change.reloaded
+                        && let Some(proxy) = self.lsp.lock().unwrap().clone()
+                        && let Ok(s) = sessions.get(change.id)
+                        && let Some(text) = sessions.text_of(&s.path)
+                    {
+                        proxy.refresh(&s.path, &text);
+                    }
+                    (self.emit)(
+                        "disk-change",
+                        serde_json::to_value(&change).unwrap_or_default(),
+                    );
+                }
+            }
+            if n.is_multiple_of(30) {
+                self.autosave();
+            }
+        }
     }
 
     fn set_engine(&self, status: EngineStatus) {
@@ -325,6 +377,9 @@ async fn model_open(core: CoreState<'_>, path: PathBuf) -> AppResult<ModelView> 
             });
         }
         let view = core.sessions()?.open(&path)?;
+        if core.autosaves.read(&path).is_some() {
+            core.pending_recovery.lock().unwrap().insert(path.clone());
+        }
         core.settings.lock().unwrap().add_recent(&path);
         core.save_settings();
         Ok(view)
@@ -375,7 +430,16 @@ async fn model_attach_view(core: CoreState<'_>, id: u64, channel: Channel) -> Ap
 #[tauri::command]
 async fn model_close(core: CoreState<'_>, id: u64) -> AppResult<()> {
     let core = core.inner().clone();
-    blocking(move || core.sessions()?.close(id)).await
+    blocking(move || {
+        let path = model_path(&core, id)?;
+        core.sessions()?.close(id)?;
+        // The user has saved or chosen not to save by now; an unanswered recovery stays.
+        if !core.pending_recovery.lock().unwrap().contains(&path) {
+            core.autosaves.remove(&path);
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -461,7 +525,85 @@ async fn model_set_info(core: CoreState<'_>, id: u64, info: String) -> AppResult
 #[tauri::command]
 async fn model_save(core: CoreState<'_>, id: u64) -> AppResult<()> {
     let core = core.inner().clone();
-    blocking(move || core.sessions()?.save(id)).await
+    blocking(move || {
+        core.sessions()?.save(id)?;
+        let path = model_path(&core, id)?;
+        core.pending_recovery.lock().unwrap().remove(&path);
+        core.autosaves.remove(&path);
+        Ok(())
+    })
+    .await
+}
+
+// ----------------------------------------------------------- autosave, recovery, disk changes
+
+/// The autosaved copy of a model the app stopped without saving, with a diff against the
+/// file on disk.
+#[tauri::command]
+async fn model_recovery(core: CoreState<'_>, id: u64) -> AppResult<Option<recovery::Recovery>> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let path = model_path(&core, id)?;
+        let disk = std::fs::read_to_string(&path).unwrap_or_default();
+        let r = core.autosaves.recovery(&path, &disk);
+        if r.is_none() {
+            core.pending_recovery.lock().unwrap().remove(&path);
+        }
+        Ok(r)
+    })
+    .await
+}
+
+/// Restores the autosaved copy (`restore` true) or throws it away.
+#[tauri::command]
+async fn model_resolve_recovery(
+    core: CoreState<'_>,
+    id: u64,
+    restore: bool,
+) -> AppResult<Option<ModelView>> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let path = model_path(&core, id)?;
+        let view = if restore {
+            let (text, _) = core
+                .autosaves
+                .read(&path)
+                .ok_or_else(|| AppError::new("The autosaved copy is gone."))?;
+            Some(core.sessions()?.restore(id, text)?)
+        } else {
+            core.autosaves.remove(&path);
+            None
+        };
+        core.pending_recovery.lock().unwrap().remove(&path);
+        Ok(view)
+    })
+    .await
+}
+
+/// Takes the file on disk, dropping unsaved edits (after another program changed it).
+#[tauri::command]
+async fn model_reload(core: CoreState<'_>, id: u64) -> AppResult<ModelView> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let view = core.sessions()?.reload(id)?;
+        if let Some(proxy) = core.lsp.lock().unwrap().clone() {
+            let text = std::fs::read_to_string(&view.path).unwrap_or_default();
+            proxy.refresh(&view.path, &text);
+        }
+        Ok(view)
+    })
+    .await
+}
+
+/// Autosaves now, when the window loses focus.
+#[tauri::command]
+async fn autosave_now(core: CoreState<'_>) -> AppResult<()> {
+    let core = core.inner().clone();
+    blocking(move || {
+        core.autosave();
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -864,6 +1006,7 @@ fn main() {
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("logos"));
+            let dir_for_autosave = dir.join("autosave");
             let store = Store::new(dir);
             let settings = store.load();
             let handle = app.handle().clone();
@@ -882,9 +1025,13 @@ fn main() {
                 passphrase: Mutex::new(None),
                 studies: Arc::new(experiments::Studies::default()),
                 bridge_config: Mutex::new(None),
+                autosaves: recovery::Autosaves::new(dir_for_autosave),
+                pending_recovery: Mutex::new(Default::default()),
                 emit,
             });
             app.manage(core.clone());
+            let watcher = core.clone();
+            std::thread::spawn(move || watcher.watch());
             std::thread::spawn(move || core.start_engine());
             Ok(())
         })
@@ -923,6 +1070,10 @@ fn main() {
             model_edit_widget,
             model_undo,
             git_status,
+            model_recovery,
+            model_resolve_recovery,
+            model_reload,
+            autosave_now,
             lsp_send,
             lsp_code_uri,
             project_status,

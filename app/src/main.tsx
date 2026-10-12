@@ -9,6 +9,7 @@ import { render } from "preact";
 import { App } from "./app";
 import { installShortcuts } from "./commands";
 import { interceptLinks } from "./links";
+import { installRecovery } from "./recovery";
 import { init, refreshTheme } from "./state";
 
 import { invoke } from "@tauri-apps/api/core";
@@ -20,5 +21,6 @@ window.addEventListener("unhandledrejection", (e) => uiLog("error", `unhandled: 
 refreshTheme();
 installShortcuts();
 interceptLinks();
+installRecovery();
 init().catch((e) => console.error(e));
 render(<App />, document.getElementById("app")!);

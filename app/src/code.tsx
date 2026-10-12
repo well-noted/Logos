@@ -91,6 +91,12 @@ export function revealOffset(offset: number) {
   current.focus();
 }
 
+/** Puts new text in the open editor (a reload or a restore); its undo can take it back. */
+export function replaceOpenCode(text: string) {
+  if (!current || current.state.doc.toString() === text) return;
+  current.dispatch({ changes: { from: 0, to: current.state.doc.length, insert: text } });
+}
+
 /** Selects a range in the open editor, as search does. */
 export function revealRange(start: number, end: number) {
   if (!current) return;
