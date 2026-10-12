@@ -395,3 +395,207 @@ fn s_expressions_parse_as_netlogo_reads_them() {
     }));
     assert_eq!(failed, 0, "{failed} cases differ");
 }
+
+/// Byte offset of each UTF-16 offset in `s` (and of its end).
+fn utf16_to_byte(s: &str) -> Vec<usize> {
+    let mut out = Vec::with_capacity(s.len() + 1);
+    for (i, c) in s.char_indices() {
+        for _ in 0..c.len_utf16() {
+            out.push(i);
+        }
+    }
+    out.push(s.len());
+    out
+}
+
+/// The kind NetLogo's `workspace.references` uses for one of our targets, if it reports it.
+fn netlogo_kind(t: &logos_syntax::Target) -> Option<&'static str> {
+    use logos_syntax::{Owner, Target};
+    Some(match t {
+        Target::Procedure(_) => "procedure",
+        Target::Global(_) => "global",
+        Target::AgentVariable { owner, .. } => match owner {
+            Owner::Turtle => "turtle",
+            Owner::Patch => "patch",
+            Owner::Link => "link",
+            Owner::TurtleOrLink => "turtle-or-link",
+            Owner::Breed(_) => "breed",
+        },
+        Target::Local { .. } => "local",
+        _ => return None,
+    })
+}
+
+/// S1: for every corpus model that compiles, every procedure call and variable reference
+/// NetLogo's compiler resolves is found by the parser, at the same place and of the same kind.
+#[test]
+#[ignore = "needs NetLogo 7.0.4 and the bridge jar"]
+fn s1_references_match_netlogo() {
+    let home = find_netlogo_home(NETLOGO_VERSION).expect("NetLogo 7.0.4");
+    let jar = repo().join("bridge/build/libs/logos-bridge-0.0.0.jar");
+    let bridge = Bridge::spawn(&BridgeConfig::new(home, NETLOGO_VERSION, jar)).expect("bridge");
+    let models = models();
+    let tables: Mutex<BTreeMap<Vec<String>, Option<Language>>> = Mutex::new(BTreeMap::new());
+    let workers = std::env::var("LOGOS_WORKERS")
+        .ok()
+        .and_then(|w| w.parse().ok())
+        .unwrap_or(4usize);
+    let queue = Mutex::new(models.iter());
+    // compared models, NetLogo references, extra references of ours, skipped
+    let counts = Mutex::new((0usize, 0usize, 0usize, 0usize));
+    let failures = Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                loop {
+                    let Some(path) = queue.lock().unwrap().next() else {
+                        break;
+                    };
+                    let file = Nlogox::parse(std::fs::read_to_string(path).unwrap()).unwrap();
+                    if file.section("systemDynamics").is_some() {
+                        counts.lock().unwrap().3 += 1;
+                        continue;
+                    }
+                    let prog = program(path);
+                    let mut exts: Vec<String> = prog
+                        .structure
+                        .extensions
+                        .iter()
+                        .map(|e| e.to_ascii_lowercase())
+                        .collect();
+                    exts.sort();
+                    exts.dedup();
+                    let lang = {
+                        let mut t = tables.lock().unwrap();
+                        t.entry(exts.clone())
+                            .or_insert_with(|| {
+                                let names: Vec<&str> = exts.iter().map(String::as_str).collect();
+                                bridge
+                                    .primitives(&names)
+                                    .ok()
+                                    .and_then(|r| Language::from_table(&r).ok())
+                            })
+                            .clone()
+                    };
+                    let Some(lang) = lang else {
+                        counts.lock().unwrap().3 += 1;
+                        continue;
+                    };
+                    let Ok(open) = bridge.open(path) else {
+                        counts.lock().unwrap().3 += 1;
+                        continue;
+                    };
+                    let resolved = if open.compiled {
+                        bridge.references(open.workspace, &prog.code).ok()
+                    } else {
+                        None
+                    };
+                    let _ = bridge.dispose(open.workspace);
+                    let Some(resolved) = resolved else {
+                        counts.lock().unwrap().3 += 1;
+                        continue;
+                    };
+                    let ctx = Context {
+                        language: &lang,
+                        structure: &prog.structure,
+                        interface_globals: &prog.interface_globals,
+                    };
+                    // Our references per source: the code, then each include file.
+                    let sources: Vec<(Option<String>, &str)> =
+                        std::iter::once((None, prog.code.as_str()))
+                            .chain(prog.includes.iter().map(|(p, t)| {
+                                (
+                                    Some(p.file_name().unwrap().to_string_lossy().into_owned()),
+                                    t.as_str(),
+                                )
+                            }))
+                            .collect();
+                    let ours: Vec<_> = sources
+                        .iter()
+                        .map(|(_, src)| parse_with(src, &ctx).references)
+                        .collect();
+                    let mut problems = Vec::new();
+                    let mut matched = vec![BTreeSet::new(); sources.len()];
+                    for r in &resolved.references {
+                        let idx = match &r.file {
+                            None => Some(0),
+                            Some(f) => {
+                                let base = Path::new(f)
+                                    .file_name()
+                                    .map(|b| b.to_string_lossy().into_owned());
+                                sources.iter().position(|(n, _)| n.is_some() && *n == base)
+                            }
+                        };
+                        let Some(idx) = idx else {
+                            continue;
+                        };
+                        let src = sources[idx].1;
+                        let map = utf16_to_byte(src);
+                        let span = map[r.start.min(map.len() - 1)]..map[r.end.min(map.len() - 1)];
+                        match ours[idx].iter().position(|o| o.span == span) {
+                            Some(i) => {
+                                matched[idx].insert(i);
+                                let kind = netlogo_kind(&ours[idx][i].target);
+                                if kind != Some(r.kind.as_str()) {
+                                    let line = src[..span.start].lines().count().max(1);
+                                    problems.push(format!(
+                                        "line {line} `{}`: NetLogo {}, ours {:?}",
+                                        r.name, r.kind, ours[idx][i].target
+                                    ));
+                                }
+                            }
+                            None => {
+                                let line = src[..span.start].lines().count().max(1);
+                                problems.push(format!(
+                                    "line {line} `{}`: NetLogo {}, ours missing",
+                                    r.name, r.kind
+                                ));
+                            }
+                        }
+                    }
+                    let extra: usize = ours
+                        .iter()
+                        .zip(&matched)
+                        .map(|(o, m)| {
+                            o.iter()
+                                .enumerate()
+                                .filter(|(i, r)| {
+                                    !m.contains(i) && netlogo_kind(&r.target).is_some()
+                                })
+                                .count()
+                        })
+                        .sum();
+                    {
+                        let mut c = counts.lock().unwrap();
+                        c.0 += 1;
+                        c.1 += resolved.references.len();
+                        c.2 += extra;
+                    }
+                    if !problems.is_empty() {
+                        failures.lock().unwrap().push((path.clone(), problems));
+                    }
+                }
+            });
+        }
+    });
+    bridge.shutdown().unwrap();
+    let (compared, total, extra, skipped) = counts.into_inner().unwrap();
+    let mut failures = failures.into_inner().unwrap();
+    failures.sort();
+    eprintln!(
+        "S1: {} models; {compared} compared ({total} NetLogo references), {skipped} skipped \
+         (don't compile, system dynamics, or no primitive table); {} with differences; \
+         {extra} references of ours that NetLogo doesn't report",
+        models.len(),
+        failures.len()
+    );
+    for (p, e) in failures.iter().take(25) {
+        eprintln!(
+            "  {}: {} ({} differences)",
+            p.file_name().unwrap().to_string_lossy(),
+            e[0],
+            e.len()
+        );
+    }
+    assert!(failures.is_empty());
+}
