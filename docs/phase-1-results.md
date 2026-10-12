@@ -44,3 +44,18 @@ Notes from the Windows runs:
 ## Part L: models that call language models
 
 Moved to Phase 3, where Logos has a user interface (D-20). Not measured in Phase 1.
+
+## Part S: language support
+
+Measured 2026-10-11 on Linux (cloud, `gis` and `nw` extensions only) and on Windows (Thomas's machine, the extensions NetLogo 7.0.4 bundles).
+
+The expression parser (`logos_syntax::parse_with`) takes the primitive table from NetLogo through the bridge: `engine.primitives` now also returns the built-in agent variables, constants, keywords, the primitives NetLogo derives from breeds (found by asking NetLogo's own breed handling), and the type masks the parser needs (D-01). It records what every name refers to (primitive, breed primitive, procedure, global, agent variable, local) and where each local is defined.
+
+| # | Criterion | Result | Status |
+|---|---|---|---|
+| S1 | Parser agrees with NetLogo on references | Step 14 | Open |
+| S2 | No false errors | Windows: 591 corpus models, 583 parsed, none of them reports an error while compiling in NetLogo; 8 have no primitive table because NetLogo can't load one of their extensions on this machine either. Linux (cloud, `gis` and `nw` only): 508 parsed, same result. Models with a system dynamics diagram get the globals and procedures NetLogo generates from it through `workspace.program` | Met |
+| S3 | Rename is safe | Step 17 | Open |
+| S4 | Diagnostics positions | Step 15 | Open |
+| S5 | Responsiveness | Step 16 | Open |
+| S6 | Lossless | The full tree's text equals the source for all 583 parsed models on Windows | Met |
