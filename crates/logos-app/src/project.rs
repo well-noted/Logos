@@ -272,6 +272,84 @@ pub fn set_file_role(model: &Path, path: &str, role: &str) -> AppResult<ProjectV
     status(model)
 }
 
+/// An edit to `logos.toml` from the Project document; everything else in the file is kept.
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ProjectEdit {
+    Engine {
+        engine: String,
+    },
+    Python {
+        requirements: String,
+        interpreter: String,
+    },
+    Secrets {
+        required: Vec<String>,
+        optional: Vec<String>,
+    },
+    Description {
+        path: String,
+        description: String,
+    },
+    AddFile {
+        path: String,
+        role: String,
+    },
+}
+
+pub fn edit(model: &Path, edit: ProjectEdit) -> AppResult<ProjectView> {
+    let (dir, _) = model_name(model)?;
+    let mut p = Project::open(&dir).map_err(err)?;
+    let some = |s: String| (!s.trim().is_empty()).then(|| s.trim().to_string());
+    match edit {
+        ProjectEdit::Engine { engine } => p.set_engine(engine.trim()),
+        ProjectEdit::Python {
+            requirements,
+            interpreter,
+        } => p.set_python(&logos_project::Python {
+            requirements: some(requirements),
+            interpreter: some(interpreter),
+        }),
+        ProjectEdit::Secrets { required, optional } => {
+            let clean = |v: Vec<String>| -> Vec<String> {
+                let mut out: Vec<String> = Vec::new();
+                for n in v.into_iter().map(|n| n.trim().to_string()) {
+                    if !n.is_empty() && !out.contains(&n) {
+                        out.push(n);
+                    }
+                }
+                out
+            };
+            p.set_secrets(&logos_project::Secrets {
+                required: clean(required),
+                optional: clean(optional),
+            })
+            .map_err(err)?
+        }
+        ProjectEdit::Description { path, description } => {
+            let mut f = p
+                .files()
+                .map_err(err)?
+                .into_iter()
+                .find(|f| f.path == path)
+                .ok_or_else(|| AppError::new(format!("{path} isn't a file of this project")))?;
+            f.description = some(description);
+            p.set_file(&f).map_err(err)?;
+        }
+        ProjectEdit::AddFile { path, role } => {
+            let r =
+                parse_role(&role).ok_or_else(|| AppError::new(format!("unknown role {role}")))?;
+            let path = path.trim().replace('\\', "/");
+            if p.files().map_err(err)?.iter().any(|f| f.path == path) {
+                return Err(AppError::new(format!("{path} is already in the project")));
+            }
+            p.set_file(&FileEntry::new(path, r)).map_err(err)?;
+        }
+    }
+    p.save().map_err(err)?;
+    status(model)
+}
+
 // ------------------------------------------------------------------------------- the check
 
 struct Machine {
@@ -282,7 +360,15 @@ struct Machine {
 impl Environment for Machine {
     fn run_python(&self, interpreter: &str, args: &[&str]) -> Option<String> {
         // Arguments as a list (D-17).
-        let out = Command::new(interpreter).args(args).output().ok()?;
+        let mut cmd = Command::new(interpreter);
+        cmd.args(args);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NO_WINDOW: no console window flashing up during the check.
+            cmd.creation_flags(0x0800_0000);
+        }
+        let out = cmd.output().ok()?;
         out.status
             .success()
             .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
@@ -535,4 +621,84 @@ pub fn recent_access(limit: usize) -> Vec<String> {
     lines.drain(..keep);
     lines.reverse();
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_edits_keep_the_rest_of_logos_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("m.nlogox");
+        std::fs::write(&model, "<model/>").unwrap();
+        std::fs::write(
+            dir.path().join(PROJECT_FILE),
+            "# notes kept\n[project]\nmodel = \"m.nlogox\"\nowner = \"lab\"\n\n[[files]]\npath = \"data/in.txt\"\nrole = \"input\"\n",
+        )
+        .unwrap();
+        edit(
+            &model,
+            ProjectEdit::Engine {
+                engine: "netlogo 7.0.4".into(),
+            },
+        )
+        .unwrap();
+        edit(
+            &model,
+            ProjectEdit::Secrets {
+                required: vec![
+                    "OPENAI_API_KEY".into(),
+                    " OPENAI_API_KEY ".into(),
+                    "".into(),
+                ],
+                optional: vec![],
+            },
+        )
+        .unwrap();
+        edit(
+            &model,
+            ProjectEdit::Description {
+                path: "data/in.txt".into(),
+                description: "Rainfall".into(),
+            },
+        )
+        .unwrap();
+        let v = edit(
+            &model,
+            ProjectEdit::AddFile {
+                path: "data\\out.csv".into(),
+                role: "output".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(v.engine.as_deref(), Some("netlogo 7.0.4"));
+        assert_eq!(v.required, ["OPENAI_API_KEY"]);
+        assert_eq!(v.files.len(), 2);
+        assert_eq!(v.files[0].description.as_deref(), Some("Rainfall"));
+        assert_eq!(v.files[1].path, "data/out.csv");
+        let text = std::fs::read_to_string(dir.path().join(PROJECT_FILE)).unwrap();
+        assert!(text.starts_with("# notes kept"));
+        assert!(text.contains("owner = \"lab\""));
+        assert!(
+            edit(
+                &model,
+                ProjectEdit::AddFile {
+                    path: "data/out.csv".into(),
+                    role: "input".into()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            edit(
+                &model,
+                ProjectEdit::Secrets {
+                    required: vec!["not a name".into()],
+                    optional: vec![]
+                }
+            )
+            .is_err()
+        );
+    }
 }

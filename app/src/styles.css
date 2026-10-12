@@ -383,3 +383,7 @@ pre.log { max-height: 160px; overflow: auto; font-size: 11px; background: var(--
 .data-doc .table-scroll th { position: sticky; top: 0; background: var(--bg-panel); }
 .data-doc .dictionary input[type="text"] { width: 100%; min-width: 0; box-sizing: border-box; }
 .link-btn { border: 0; background: transparent; color: var(--text); padding: 0; font: inherit; cursor: pointer; text-decoration: underline; text-decoration-color: var(--text-muted); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 24px; }
+.chip { display: inline-flex; align-items: center; gap: 2px; padding: 0 2px 0 8px; border: 1px solid var(--control-border); border-radius: 12px; font-size: 12px; }
+.chip .icon-btn { width: 20px; height: 20px; }

@@ -805,6 +805,17 @@ async fn dictionary_save(
     blocking(move || data::save_dictionary(&model_path(&core, id)?, &path, &dictionary)).await
 }
 
+/// Edits `logos.toml` from the Project document.
+#[tauri::command]
+async fn project_edit(
+    core: CoreState<'_>,
+    id: u64,
+    edit: project::ProjectEdit,
+) -> AppResult<project::ProjectView> {
+    let core = core.inner().clone();
+    blocking(move || project::edit(&model_path(&core, id)?, edit)).await
+}
+
 #[tauri::command]
 async fn project_set_role(
     core: CoreState<'_>,
@@ -1204,6 +1215,7 @@ fn main() {
             project_detect,
             project_init,
             project_set_role,
+            project_edit,
             data_preview,
             dictionary_save,
             project_check,
