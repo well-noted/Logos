@@ -5,9 +5,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use logos_bridge_client::{Bridge, BridgeConfig, ClientError, EnvValue, find_netlogo_home};
+use logos_experiment::provenance::{HashedFile, Provenance, RunRecord};
 use logos_experiment::results::{ResultsDir, RunMeta};
 use logos_experiment::runner::{ExperimentSource, RunOptions, RunnerError, run_experiment};
-use logos_project::{PROJECT_FILE, Project};
+use logos_project::{PROJECT_FILE, Project, Role};
 
 pub const USAGE: &str =
     "  logos run EXPERIMENT [FOLDER] [--workers N] [--setup-file FILE] [--out DIR]
@@ -24,7 +25,8 @@ pub const USAGE: &str =
     --setup-file F   read the experiment from a BehaviorSpace XML file instead of the model
     --out DIR        the results folder (default: FOLDER/results/EXPERIMENT-DATE-TIME)
     --update-plots   update plots during runs (off by default, as in headless NetLogo)
-    --resume DIR     finish an interrupted experiment: run only the runs DIR doesn't have";
+    --resume DIR     finish an interrupted experiment: run only the runs DIR doesn't have.
+                     Refused if the engine, the model or an input file changed since";
 
 struct Args {
     experiment: Option<String>,
@@ -143,6 +145,74 @@ fn secret_env(project: &Project) -> Result<Vec<(String, EnvValue)>, String> {
         .collect())
 }
 
+/// A path as recorded: relative to the project folder with `/` separators when inside it,
+/// otherwise absolute.
+fn recorded_path(project_dir: &Path, path: &Path) -> String {
+    match path.strip_prefix(project_dir) {
+        Ok(rel) => rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+        Err(_) => path.to_string_lossy().into_owned(),
+    }
+}
+
+/// The engine and the files a run depends on (E3): the model, `logos.toml`, the experiments
+/// file, and every project file the model reads or runs, with its data dictionary. Output
+/// files are left out.
+fn provenance(
+    project: &Project,
+    project_dir: &Path,
+    model: &Path,
+    setup_file: Option<&Path>,
+    hello: &logos_bridge_client::protocol::HelloResult,
+    netlogo_version: &str,
+    secrets: Vec<String>,
+) -> Result<Provenance, String> {
+    let mut files = vec![HashedFile::new(
+        &recorded_path(project_dir, model),
+        "model",
+        model,
+    )];
+    let toml = project_dir.join(PROJECT_FILE);
+    if toml.is_file() {
+        files.push(HashedFile::new(PROJECT_FILE, "project", &toml));
+    }
+    if let Some(s) = setup_file {
+        files.push(HashedFile::new(
+            &recorded_path(project_dir, s),
+            "experiments",
+            s,
+        ));
+    }
+    for f in project.files().map_err(|e| e.to_string())? {
+        if f.role == Role::Output {
+            continue;
+        }
+        files.push(HashedFile::new(
+            &f.path,
+            f.role.as_str(),
+            &project_dir.join(&f.path),
+        ));
+        if let Some(d) = &f.dictionary {
+            files.push(HashedFile::new(d, "dictionary", &project_dir.join(d)));
+        }
+    }
+    files.dedup_by(|a, b| a.path == b.path);
+    Ok(Provenance {
+        logos_version: env!("CARGO_PKG_VERSION").to_owned(),
+        netlogo_version: netlogo_version.to_owned(),
+        bridge_version: hello.bridge_version.clone(),
+        java_version: hello.java_version.clone(),
+        java_vendor: hello.java_vendor.clone(),
+        os: std::env::consts::OS.to_owned(),
+        arch: std::env::consts::ARCH.to_owned(),
+        files,
+        secrets,
+    })
+}
+
 fn open_project(dir: &Path) -> Result<Project, String> {
     if dir.join(PROJECT_FILE).exists() {
         Project::open(dir).map_err(|e| e.to_string())
@@ -215,6 +285,7 @@ pub fn run(args: &[&str]) -> Result<(), String> {
     )?;
     let mut config = BridgeConfig::new(home, &version, jar);
     config.env = secret_env(&project)?;
+    let secret_names: Vec<String> = config.env.iter().map(|(n, _)| n.clone()).collect();
 
     let out_dir = match (&resume, &a.out) {
         (Some(r), _) => r.path().to_owned(),
@@ -247,6 +318,26 @@ pub fn run(args: &[&str]) -> Result<(), String> {
         .netlogo_version
         .clone()
         .unwrap_or_else(|| version.clone());
+    let provenance = provenance(
+        &project,
+        &project_dir,
+        &model,
+        setup_file.as_deref(),
+        bridge.hello(),
+        &netlogo_version,
+        secret_names,
+    )?;
+    if let Some(then) = resume.as_ref().and_then(|r| r.meta.provenance.as_ref()) {
+        let changed = then.differences(&provenance);
+        if !changed.is_empty() {
+            let _ = bridge.shutdown();
+            return Err(format!(
+                "these results were started with different inputs, so new runs couldn't be \
+                 compared with them: {}. Start a new run instead",
+                changed.join("; ")
+            ));
+        }
+    }
     let source = ExperimentSource {
         model: model.clone(),
         name: experiment.clone(),
@@ -300,6 +391,7 @@ pub fn run(args: &[&str]) -> Result<(), String> {
                             metrics: e.metrics.clone(),
                             update_plots,
                             created: chrono::Local::now().to_rfc3339(),
+                            provenance: Some(provenance.clone()),
                         },
                     )
                     .map_err(|e| e.to_string())?,
@@ -337,7 +429,22 @@ pub fn run(args: &[&str]) -> Result<(), String> {
                 return;
             }
             if let Some(out) = output.lock().unwrap().as_mut() {
-                let saved = out.results.save_run(r).map_err(|e| e.to_string());
+                let ended = chrono::Local::now();
+                let started =
+                    ended - chrono::Duration::milliseconds(r.elapsed_millis.round() as i64);
+                let record = RunRecord {
+                    run_number: r.run_number,
+                    started: started.to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+                    ended: ended.to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+                    worker: o.worker,
+                    random_seed: r
+                        .settings
+                        .iter()
+                        .find(|s| s.name.eq_ignore_ascii_case("random-seed"))
+                        .map(|s| s.cell.text.clone()),
+                    provenance: provenance.clone(),
+                };
+                let saved = out.results.save_run(r, &record).map_err(|e| e.to_string());
                 let written = out.table.write_run(r).map_err(|e| e.to_string());
                 if let Err(e) = saved.and(written) {
                     fail(e);

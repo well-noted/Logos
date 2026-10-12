@@ -4,6 +4,7 @@
 pub mod behaviorspace;
 pub mod dump;
 pub mod parquet;
+pub mod provenance;
 pub mod results;
 pub mod runner;
 pub mod table;
