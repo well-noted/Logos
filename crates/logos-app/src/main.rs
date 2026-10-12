@@ -510,6 +510,78 @@ async fn model_widgets(core: CoreState<'_>, id: u64) -> AppResult<Vec<logos_nlog
     .await
 }
 
+// ------------------------------------------------------------------------ interface editing
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase")]
+enum WidgetOp {
+    Bounds {
+        index: usize,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
+    Attr {
+        index: usize,
+        name: String,
+        value: String,
+    },
+    Text {
+        index: usize,
+        text: String,
+    },
+    Add {
+        kind: String,
+        x: i32,
+        y: i32,
+        name: String,
+    },
+    Delete {
+        index: usize,
+    },
+}
+
+#[tauri::command]
+async fn model_edit_widget(
+    core: CoreState<'_>,
+    id: u64,
+    op: WidgetOp,
+) -> AppResult<session::WidgetEdit> {
+    let core = core.inner().clone();
+    blocking(move || {
+        core.sessions()?.edit_widgets(id, |n| {
+            let r = match op {
+                WidgetOp::Bounds {
+                    index,
+                    x,
+                    y,
+                    width,
+                    height,
+                } => n.set_widget_bounds(index, x, y, width.max(10), height.max(10)),
+                WidgetOp::Attr { index, name, value } => {
+                    n.set_widget_attribute(index, &name, &value)
+                }
+                WidgetOp::Text { index, text } => n.set_widget_text(index, &text),
+                WidgetOp::Add { kind, x, y, name } => {
+                    let xml = logos_nlogox::widgets::new_widget_xml(&kind, x, y, &name)
+                        .ok_or_else(|| format!("unknown widget kind {kind}"))?;
+                    n.add_widget(&xml).map(|_| ())
+                }
+                WidgetOp::Delete { index } => n.delete_widget(index),
+            };
+            r.map_err(|e| e.to_string())
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn model_undo(core: CoreState<'_>, id: u64, redo: bool) -> AppResult<session::WidgetEdit> {
+    let core = core.inner().clone();
+    blocking(move || core.sessions()?.undo_redo(id, redo)).await
+}
+
 // ------------------------------------------------------------------------- projects, secrets
 
 fn model_path(core: &Core, id: u64) -> AppResult<PathBuf> {
@@ -819,6 +891,8 @@ fn main() {
             model_apply,
             model_outline,
             model_widgets,
+            model_edit_widget,
+            model_undo,
             lsp_send,
             lsp_code_uri,
             project_status,

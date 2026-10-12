@@ -44,8 +44,8 @@ svg.icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-w
 .titlebar .title { margin: 0 auto; font-weight: 600; }
 .menubar { display: flex; gap: 2px; }
 .menu { position: relative; }
-.menu > button { border: 0; background: transparent; padding: 4px 8px; border-radius: 3px; cursor: pointer; }
-.menu > button:hover, .menu > button[aria-expanded="true"] { background: var(--bg-hover); }
+.menubar .menu > button { border: 0; background: transparent; padding: 4px 8px; border-radius: 3px; cursor: pointer; }
+.menubar .menu > button:hover, .menubar .menu > button[aria-expanded="true"] { background: var(--bg-hover); }
 .menu-list {
   position: absolute; top: 100%; left: 0; z-index: 50; min-width: 240px; padding: 4px; margin: 2px 0 0;
   list-style: none; background: var(--bg-panel); border: 1px solid var(--control-border); border-radius: 4px;
@@ -320,3 +320,13 @@ pre.log { max-height: 160px; overflow: auto; font-size: 11px; background: var(--
 .stat { display: inline-flex; flex-direction: column; padding: 6px 14px 6px 0; }
 .stat b { font-size: 18px; font-weight: 600; }
 .stat span { font-size: 11px; color: var(--text-muted); }
+
+/* ---- interface editing ------------------------------------------------------------------- */
+
+.interface.editing .w { pointer-events: none; }
+.edit-frame { position: absolute; border: 1px dashed var(--control-border); cursor: move; z-index: 5; touch-action: none; }
+.edit-frame:hover { background: color-mix(in srgb, var(--focus) 8%, transparent); }
+.edit-frame.selected { border: 2px solid var(--focus); }
+.edit-frame .resize { position: absolute; right: -5px; bottom: -5px; width: 10px; height: 10px; background: var(--focus); cursor: nwse-resize; border-radius: 2px; }
+.btn[aria-pressed="true"] { background: var(--bg-selected); border-color: var(--focus); }
+.inspector .form-grid input[type="text"], .inspector .form-grid select, .inspector .form-grid textarea { width: 100%; min-width: 0; }

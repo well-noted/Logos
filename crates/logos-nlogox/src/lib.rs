@@ -214,6 +214,104 @@ impl Nlogox {
         }
     }
 
+    /// The whitespace that starts the line `offset` is on, when only whitespace precedes it
+    /// on that line.
+    fn indent_before(&self, offset: usize) -> Option<&str> {
+        let line_start = self.text[..offset].rfind('\n').map_or(0, |i| i + 1);
+        let lead = &self.text[line_start..offset];
+        lead.chars().all(|c| c == ' ' || c == '\t').then_some(lead)
+    }
+
+    /// Inserts `xml`, one element as written, as a child of the element at `parent`: before
+    /// its child element `before`, or after the last one. The new element gets its own line,
+    /// indented like its siblings (or one step more than its parent), with the file's line
+    /// ends. Nothing else in the file changes.
+    pub fn insert_element(
+        &mut self,
+        parent: &[usize],
+        before: Option<usize>,
+        xml: &str,
+    ) -> Result<(), EditError> {
+        let p = self
+            .root
+            .at(parent)
+            .ok_or_else(|| EditError::NoSuchElement(parent.to_vec()))?;
+        let nl = self.line_end();
+        let children: Vec<&Element> = p.elements().collect();
+        let xml = xml.replace("\r\n", "\n").replace('\n', nl);
+        if let Some(first) = children.first() {
+            let indent = self
+                .indent_before(first.span.start)
+                .unwrap_or("")
+                .to_string();
+            let (at, text) = match before {
+                Some(i) => {
+                    let c = children
+                        .get(i)
+                        .ok_or_else(|| EditError::NoSuchElement([parent, &[i]].concat()))?;
+                    (c.span.start, format!("{xml}{nl}{indent}"))
+                }
+                None => {
+                    let last = children.last().expect("not empty");
+                    (last.span.end, format!("{nl}{indent}{xml}"))
+                }
+            };
+            return self.replace(at..at, &text);
+        }
+        // No child elements yet.
+        let parent_indent = self.indent_before(p.span.start).unwrap_or("").to_string();
+        let child_indent = format!("{parent_indent}  ");
+        match &p.content {
+            Some(content) => {
+                let inner = &self.text[content.clone()];
+                if !inner.trim().is_empty() {
+                    return Err(EditError::HasChildElements(p.name.clone()));
+                }
+                let text = format!("{nl}{child_indent}{xml}{nl}{parent_indent}");
+                self.replace(content.clone(), &text)
+            }
+            None => {
+                let tag = self.raw(&p.start_tag);
+                let open = tag
+                    .trim_end_matches('>')
+                    .trim_end_matches('/')
+                    .trim_end()
+                    .to_string();
+                let text = format!(
+                    "{open}>{nl}{child_indent}{xml}{nl}{parent_indent}</{}>",
+                    p.name
+                );
+                self.replace(p.span.clone(), &text)
+            }
+        }
+    }
+
+    /// Removes the element at `path`. When it is alone on its line, the whole line goes, so
+    /// no blank line is left.
+    pub fn remove_element(&mut self, path: &[usize]) -> Result<(), EditError> {
+        if path.is_empty() {
+            return Err(EditError::NoSuchElement(Vec::new()));
+        }
+        let e = self
+            .root
+            .at(path)
+            .ok_or_else(|| EditError::NoSuchElement(path.to_vec()))?;
+        let mut start = e.span.start;
+        let end = e.span.end;
+        if self.indent_before(start).is_some() {
+            let line_start = self.text[..start].rfind('\n').map_or(0, |i| i + 1);
+            let rest_of_line = self.text[end..].split('\n').next().unwrap_or("");
+            if rest_of_line.trim().is_empty() && line_start > 0 {
+                // Take the line end before the element's line, and the indentation.
+                start = line_start - 1;
+                if start > 0 && self.text.as_bytes()[start - 1] == b'\r' {
+                    start -= 1;
+                }
+            }
+        }
+        self.replace(start..end, "")
+    }
+
     fn replace(&mut self, range: Range<usize>, replacement: &str) -> Result<(), EditError> {
         let mut text = String::with_capacity(self.text.len() + replacement.len());
         text.push_str(&self.text[..range.start]);

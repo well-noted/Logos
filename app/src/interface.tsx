@@ -11,6 +11,7 @@ import {
   stopModel, ticks, viewOnTicks, viewPopped,
 } from "./state";
 import { ipc } from "./ipc";
+import { AddMenu, EditFrame, canRedo, canUndo, editMode, selected, undoInterface } from "./editor";
 
 /** A NetLogo color (Java ARGB integer) as CSS. */
 export function argb(c: number): string {
@@ -42,8 +43,11 @@ export function InterfaceTab() {
         </div>
       )}
       <div class="canvas-scroll">
-        <div class="interface" style={{ width: `${right}px`, height: `${bottom}px` }} role="region" aria-label="Model interface">
+        <div class={`interface${editMode.value ? " editing" : ""}`} style={{ width: `${right}px`, height: `${bottom}px` }}
+          role="region" aria-label={editMode.value ? "Model interface, editing" : "Model interface"}
+          onPointerDown={(e) => { if (editMode.value && e.target === e.currentTarget) selected.value = null; }}>
           {m.widgets.map((w) => <WidgetView key={`${m.id}-${w.index}`} w={w} />)}
+          {editMode.value && m.widgets.map((w) => <EditFrame key={`e-${m.id}-${w.index}`} w={w} />)}
         </div>
       </div>
     </div>
@@ -58,12 +62,17 @@ function Toolbar() {
   return (
     <div class="toolbar" role="toolbar" aria-label="Interface toolbar">
       <div class="group">
-        <button class="btn small" disabled title="Interface editing comes in Phase 2 step 12">
-          <Icon name="edit" /> Edit
+        <button class="btn small" aria-pressed={editMode.value} title="Edit the interface: move, resize, add and delete widgets"
+          onClick={() => { editMode.value = !editMode.value; if (!editMode.value) selected.value = null; }}>
+          <Icon name="edit" /> {editMode.value ? "Done editing" : "Edit"}
         </button>
-        <button class="btn small" disabled title="Interface editing comes in Phase 2 step 12">
-          <Icon name="add" /> Add
-        </button>
+        <AddMenu />
+        {editMode.value && (
+          <>
+            <button class="icon-btn" aria-label="Undo interface change" title="Undo (Ctrl+Z)" disabled={!canUndo.value} onClick={() => undoInterface(false)}>↶</button>
+            <button class="icon-btn" aria-label="Redo interface change" title="Redo (Ctrl+Y)" disabled={!canRedo.value} onClick={() => undoInterface(true)}>↷</button>
+          </>
+        )}
       </div>
       <span class="sep" />
       <div class="group">

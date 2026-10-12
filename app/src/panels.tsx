@@ -193,7 +193,7 @@ export function StatusBar() {
       <span><span class={`state-dot${e.state === "ready" ? " on" : ""}`} aria-hidden="true" />{engineText}</span>
       {m && <span>{state}</span>}
       {m && <span>ticks {ticks.value ?? "–"}</span>}
-      {notApplied.value && <span>Code changed, not applied</span>}
+      {notApplied.value && <span>Changes not applied</span>}
       <span class="grow" />
       {problems.value.length > 0 && <span>{problems.value.length} problem{problems.value.length > 1 ? "s" : ""}</span>}
       {m && <span>{dirty.value ? "● unsaved" : "saved"}</span>}

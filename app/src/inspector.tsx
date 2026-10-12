@@ -4,6 +4,7 @@
 
 import { useEffect, useState } from "preact/hooks";
 import { ipc } from "./ipc";
+import { PropertySheet, editMode } from "./editor";
 import { Icon } from "./icons";
 import {
   inspected, model, monitors, outline, pauseWhen, rightOpen, runCommand, running, stopModel, ticks, watches,
@@ -32,13 +33,17 @@ export function RightPanel() {
   return (
     <aside class="rightpanel" aria-label="Inspectors">
       <div class="panel-head">
-        <span>Inspectors</span>
+        <span>{editMode.value ? "Properties" : "Inspectors"}</span>
         <button class="icon-btn" aria-label="Close inspectors" onClick={() => { rightOpen.value = false; }}><Icon name="close" /></button>
       </div>
       <div class="panel-body">
-        <AgentInspector />
-        <Watches />
-        <PauseWhen />
+        {editMode.value ? <PropertySheet /> : (
+          <>
+            <AgentInspector />
+            <Watches />
+            <PauseWhen />
+          </>
+        )}
       </div>
     </aside>
   );

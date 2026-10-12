@@ -165,6 +165,9 @@ struct Doc {
     saved_text: String,
     /// The code the interactive workspace was last compiled with.
     applied_code: String,
+    /// File texts before each interface edit, for undo; most recent last.
+    undo: Vec<String>,
+    redo: Vec<String>,
 }
 
 pub struct Session {
@@ -597,6 +600,8 @@ impl Sessions {
                 nlogox,
                 saved_text: text,
                 applied_code,
+                undo: Vec::new(),
+                redo: Vec::new(),
             }),
             frames: Mutex::new(None),
             run: Mutex::new(RunControl::default()),
@@ -1004,6 +1009,53 @@ impl Sessions {
         Ok(s.view(opened.compiled, errors, opened.model_version))
     }
 
+    /// Applies an interface edit (D-19: through span edits) and records it for undo. Returns
+    /// the widgets and whether the widgets' global variables changed, in which case the model
+    /// must be applied again before they exist in NetLogo.
+    pub fn edit_widgets(
+        &self,
+        id: u64,
+        edit: impl FnOnce(&mut Nlogox) -> Result<(), String>,
+    ) -> AppResult<WidgetEdit> {
+        let s = self.get(id)?;
+        let mut doc = s.doc.lock().unwrap();
+        let before = doc.nlogox.text().to_string();
+        let globals_before = interface_globals(&doc.nlogox);
+        edit(&mut doc.nlogox).map_err(AppError::new)?;
+        if doc.nlogox.text() != before {
+            doc.undo.push(before);
+            if doc.undo.len() > 200 {
+                doc.undo.remove(0);
+            }
+            doc.redo.clear();
+        }
+        Ok(widget_edit(&doc, globals_before))
+    }
+
+    /// Undoes or redoes the last interface edit.
+    pub fn undo_redo(&self, id: u64, redo: bool) -> AppResult<WidgetEdit> {
+        let s = self.get(id)?;
+        let mut doc = s.doc.lock().unwrap();
+        let globals_before = interface_globals(&doc.nlogox);
+        let next = if redo { doc.redo.pop() } else { doc.undo.pop() };
+        let Some(text) = next else {
+            return Ok(widget_edit(&doc, globals_before));
+        };
+        let current = doc.nlogox.text().to_string();
+        // Keep the code as it is in the editor; undo covers the interface.
+        let code = doc.nlogox.code().unwrap_or_default();
+        let mut n = Nlogox::parse(text).map_err(|e| AppError::new(e.to_string()))?;
+        n.set_code(&code)
+            .map_err(|e| AppError::new(e.to_string()))?;
+        doc.nlogox = n;
+        if redo {
+            doc.undo.push(current);
+        } else {
+            doc.redo.push(current);
+        }
+        Ok(widget_edit(&doc, globals_before))
+    }
+
     /// The file text of an open model, as edited.
     pub fn text_of(&self, path: &Path) -> Option<String> {
         let models = self.models.lock().unwrap();
@@ -1047,6 +1099,38 @@ impl Sessions {
         let s = self.get(id)?;
         let code = s.doc.lock().unwrap().nlogox.code().unwrap_or_default();
         Ok(outline(&code))
+    }
+}
+
+/// The result of an interface edit, for the front end.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WidgetEdit {
+    pub widgets: Vec<Widget>,
+    pub dirty: bool,
+    /// The widgets now define different global variables than before the edit.
+    pub globals_changed: bool,
+    pub can_undo: bool,
+    pub can_redo: bool,
+}
+
+fn interface_globals(n: &Nlogox) -> Vec<String> {
+    let mut v: Vec<String> = n
+        .typed_widgets()
+        .iter()
+        .filter_map(|w| w.data.variable().map(str::to_ascii_lowercase))
+        .collect();
+    v.sort();
+    v
+}
+
+fn widget_edit(doc: &Doc, globals_before: Vec<String>) -> WidgetEdit {
+    WidgetEdit {
+        widgets: doc.nlogox.typed_widgets(),
+        dirty: doc.nlogox.text() != doc.saved_text,
+        globals_changed: interface_globals(&doc.nlogox) != globals_before,
+        can_undo: !doc.undo.is_empty(),
+        can_redo: !doc.redo.is_empty(),
     }
 }
 
