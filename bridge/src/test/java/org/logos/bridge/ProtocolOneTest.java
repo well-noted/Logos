@@ -349,4 +349,204 @@ class ProtocolOneTest {
         return pens.isEmpty() ? List.of()
                 : (List<Object>) ((Map<String, Object>) pens.get(0)).get("points");
     }
+
+    /**
+     * B3: observing a run (plots, snapshots, view and agent frames every iteration, an observe
+     * stream and a stop condition that never fires) gives the same world as a run with none of
+     * them. Plots update in both, as in NetLogo's GUI.
+     */
+    @Test
+    void observingEverythingDoesNotChangeTheRun(@org.junit.jupiter.api.io.TempDir Path dir)
+            throws Exception {
+        List<List<String>> worlds = new java.util.ArrayList<>();
+        for (int pass = 0; pass < 2; pass++) {
+            boolean observed = pass == 1;
+            try (TestClient c = new TestClient()) {
+                long ws = open(c, AA4);
+                command(c, ws, "set run-seed 7 setup");
+                Map<String, Object> stream = Map.of();
+                if (observed) {
+                    TestClient.result(c.call("workspace.plots", params("workspace", ws)));
+                    stream = params(
+                            "view", params("everyTicks", 1L, "maxFps", 1e9),
+                            "agents", params("everyTicks", 1L, "maxFps", 1e9),
+                            "observe", params("reporters",
+                                    List.of("count households", "mean [age] of households"),
+                                    "everyTicks", 1L));
+                }
+                Map<String, Object> run = params("workspace", ws, "source", "go",
+                        "repeat", 100L, "stream", stream);
+                if (observed) {
+                    run.put("stopWhen", "count households < 0");
+                }
+                TestClient.result(c.call("workspace.run", run));
+                if (observed) {
+                    for (int i = 0; i < 20; i++) {
+                        TestClient.result(c.call("workspace.snapshot",
+                                params("workspace", ws, "view", true, "agents", true)));
+                    }
+                }
+                assertEquals("completed", c.awaitNotification("run.finished").get("reason"));
+                Path file = dir.resolve("world" + pass + ".csv");
+                TestClient.result(c.call("workspace.exportWorld",
+                        params("workspace", ws, "path", file.toString())));
+                List<String> lines = Files.readAllLines(file);
+                worlds.add(lines.subList(3, lines.size()));
+            }
+        }
+        assertEquals(worlds.get(0), worlds.get(1));
+    }
+
+    /**
+     * B4: the points a client has after 100 iterations (the first workspace.plots and then
+     * every run.plots) equal NetLogo's export-all-plots from the same workspace, for AA4 and
+     * three Models Library models with several pens.
+     */
+    @Test
+    void plotPointsMatchNetLogosExport(@org.junit.jupiter.api.io.TempDir Path dir)
+            throws Exception {
+        Path library = Path.of(System.getProperty("netlogo.models.dir"), "Sample Models",
+                "Biology");
+        plotPointsMatch(dir, AA4, "set run-seed 7 setup");
+        plotPointsMatch(dir, library.resolve("Wolf Sheep Predation.nlogox"),
+                "random-seed 7 setup");
+        plotPointsMatch(dir, library.resolve("Virus.nlogox"), "random-seed 7 setup");
+        plotPointsMatch(dir, library.resolve("Ants.nlogox"), "random-seed 7 setup");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void plotPointsMatch(Path dir, Path model, String setup) throws Exception {
+        try (TestClient c = new TestClient()) {
+            long ws = open(c, model);
+            Map<String, Map<String, List<List<Object>>>> have = new LinkedHashMap<>();
+            Map<String, Object> all = TestClient.result(c.call("workspace.plots",
+                    params("workspace", ws)));
+            merge(have, (List<Object>) all.get("plots"));
+            TestClient.result(c.call("workspace.command", params("workspace", ws,
+                    "source", setup, "snapshot", params("view", true))));
+            TestClient.result(c.call("workspace.run", params("workspace", ws, "source", "go",
+                    "repeat", 100L, "stream", params("view", params("everyTicks", 1L,
+                            "maxFps", 30.0)))));
+            c.awaitNotification("run.finished");
+            for (Map<String, Object> n : c.takeNotifications("run.plots")) {
+                merge(have, (List<Object>) n.get("plots"));
+            }
+            Path csv = dir.resolve(model.getFileName() + ".csv");
+            command(c, ws, "export-all-plots \"" + csv.toString().replace("\\", "\\\\") + "\"");
+            Map<String, Map<String, List<List<Object>>>> exported = readExport(csv);
+            assertEquals(exported.keySet(), have.keySet(), model.getFileName().toString());
+            int points = 0;
+            for (String plot : exported.keySet()) {
+                for (String pen : exported.get(plot).keySet()) {
+                    List<List<Object>> want = exported.get(plot).get(pen);
+                    List<List<Object>> got = have.get(plot).get(pen);
+                    assertEquals(want, got, model.getFileName() + ": " + plot + " / " + pen);
+                    points += want.size();
+                }
+            }
+            assertTrue(points > 100, model.getFileName() + ": points compared: " + points);
+        }
+    }
+
+    /** Applies a workspace.plots result or run.plots change: (x, y, pen down) per pen. */
+    @SuppressWarnings("unchecked")
+    private static void merge(Map<String, Map<String, List<List<Object>>>> have,
+            List<Object> plots) {
+        for (Object o : plots) {
+            Map<String, Object> plot = (Map<String, Object>) o;
+            Map<String, List<List<Object>>> pens =
+                    have.computeIfAbsent((String) plot.get("name"), k -> new LinkedHashMap<>());
+            for (Object r : (List<Object>) plot.getOrDefault("removedPens", List.of())) {
+                pens.remove(r);
+            }
+            for (Object po : (List<Object>) plot.get("pens")) {
+                Map<String, Object> pen = (Map<String, Object>) po;
+                List<List<Object>> points = Boolean.TRUE.equals(pen.get("reset"))
+                        ? new java.util.ArrayList<>()
+                        : pens.getOrDefault((String) pen.get("name"), new java.util.ArrayList<>());
+                for (Object pt : (List<Object>) pen.get("points")) {
+                    List<Object> p = (List<Object>) pt;
+                    points.add(List.of(p.get(0), p.get(1), p.get(2)));
+                }
+                pens.put((String) pen.get("name"), points);
+            }
+        }
+    }
+
+    /** NetLogo's export-all-plots CSV: (x, y, pen down) of every pen of every plot. */
+    private static Map<String, Map<String, List<List<Object>>>> readExport(Path csv)
+            throws Exception {
+        List<List<String>> rows = new java.util.ArrayList<>();
+        for (String line : Files.readAllLines(csv)) {
+            rows.add(csvFields(line));
+        }
+        Map<String, Map<String, List<List<Object>>>> out = new LinkedHashMap<>();
+        for (int i = 1; i < rows.size(); i++) {
+            if (!rows.get(i).get(0).equals("x min")) {
+                continue;
+            }
+            String plot = unquote(rows.get(i - 1).get(0));
+            Map<String, List<List<Object>>> pens = new LinkedHashMap<>();
+            int header = i;
+            while (!rows.get(header).get(0).equals("x")) {
+                header++;
+            }
+            List<String> names = rows.get(header - 1);
+            List<String> penNames = new java.util.ArrayList<>();
+            for (int k = 0; k < names.size(); k += 4) {
+                penNames.add(unquote(names.get(k)));
+                pens.put(unquote(names.get(k)), new java.util.ArrayList<>());
+            }
+            for (int r = header + 1; r < rows.size(); r++) {
+                List<String> row = rows.get(r);
+                if (row.size() < 4) {
+                    break;
+                }
+                for (int k = 0; k < penNames.size(); k++) {
+                    if (4 * k + 3 < row.size() && !row.get(4 * k).isEmpty()) {
+                        pens.get(penNames.get(k)).add(List.of(
+                                Double.parseDouble(row.get(4 * k)),
+                                Double.parseDouble(row.get(4 * k + 1)),
+                                Boolean.parseBoolean(row.get(4 * k + 3))));
+                    }
+                }
+            }
+            out.put(plot, pens);
+        }
+        return out;
+    }
+
+    private static String unquote(String s) {
+        return s.startsWith("\"") && s.endsWith("\"") && s.length() >= 2
+                ? s.substring(1, s.length() - 1) : s;
+    }
+
+    /** One CSV line's fields, with doubled quotes inside quoted fields. */
+    private static List<String> csvFields(String line) {
+        List<String> out = new java.util.ArrayList<>();
+        StringBuilder f = new StringBuilder();
+        boolean quoted = false;
+        for (int i = 0; i < line.length(); i++) {
+            char ch = line.charAt(i);
+            if (quoted) {
+                if (ch == '"' && i + 1 < line.length() && line.charAt(i + 1) == '"') {
+                    f.append('"');
+                    i++;
+                } else if (ch == '"') {
+                    quoted = false;
+                } else {
+                    f.append(ch);
+                }
+            } else if (ch == '"') {
+                quoted = true;
+            } else if (ch == ',') {
+                out.add(f.toString());
+                f.setLength(0);
+            } else {
+                f.append(ch);
+            }
+        }
+        out.add(f.toString());
+        return out;
+    }
 }
