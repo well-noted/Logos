@@ -91,6 +91,8 @@ Open a model from the launcher, or pass one on the command line: `logos-app path
 
 The first launch checks for NetLogo and the engine. If it can't find NetLogo 7.0.4, set `LOGOS_NETLOGO_HOME` to the install folder. Full build and test commands, and how Logos finds NetLogo, are in [Repository layout and Windows build](docs/repo-layout.md) and [app/README.md](app/README.md).
 
+An installable .exe has also been prepared [here](https://github.com/well-noted/Logos/releases/download/v0.0.0/Logos_0.0.0_x64-setup.exe)
+
 ## Reporting problems
 
 Bug reports are welcome. Say what you did, what you expected and what happened, and attach the model if you can share it. Don't attach files that contain keys or other secrets.
