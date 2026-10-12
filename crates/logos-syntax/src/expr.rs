@@ -167,8 +167,15 @@ impl<'a> Names<'a> {
                 add(v, var(Owner::Breed(b.name.clone()), v));
             }
         }
-        for v in &s.turtles_own {
-            if s.links_own.contains(v) {
+        // Turtle and link variables of the same name (built-in ones such as `color` too).
+        let link_vars: Vec<String> = lang
+            .link_variables
+            .iter()
+            .chain(&s.links_own)
+            .map(|v| v.to_ascii_lowercase())
+            .collect();
+        for v in lang.turtle_variables.iter().chain(&s.turtles_own) {
+            if link_vars.contains(&v.to_ascii_lowercase()) {
                 add(v, var(Owner::TurtleOrLink, v));
             }
         }

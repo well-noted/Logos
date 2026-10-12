@@ -159,7 +159,7 @@ cargo test -p logos-nlogox --test corpus -- --ignored --nocapture               
 cargo test -p logos-syntax --test corpus -- --nocapture                               # B4
 cargo test -p logos-syntax --test corpus --release -- --nocapture b7                  # B7
 cargo test -p logos-syntax --test corpus -- --ignored --nocapture                     # B5
-cargo test -p logos-syntax --test full -- --ignored --nocapture                       # S2, S6
+cargo test -p logos-syntax --test full -- --ignored --nocapture --test-threads=1     # S1, S2, S6
 ```
 
 The E1 test `e1_netlogo_behaviorspace_suite` also runs the BehaviorSpace test cases from NetLogo's own repository and compares the table output with NetLogo's expected files. It reads them from `corpus/.cache/NetLogo-7.0.4` (the source tree at tag `v7.0.4`; only `test/lab` is needed), or from the folder in `LOGOS_NETLOGO_SRC` (for example the `v7.0.4` worktree described under "NetLogo source"), and is skipped when neither is there.

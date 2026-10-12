@@ -238,6 +238,20 @@ impl Bridge {
         )
     }
 
+    /// What NetLogo's compiler front end resolves each procedure call and variable reference
+    /// in `source` (the model's code) to, in the workspace's program context.
+    pub fn references(
+        &self,
+        workspace: WorkspaceId,
+        source: &str,
+    ) -> Result<logos_protocol::ReferencesResult, ClientError> {
+        self.call_typed(
+            "workspace.references",
+            logos_protocol::ReferencesParams { workspace, source },
+            DEFAULT_TIMEOUT,
+        )
+    }
+
     /// The syntax of every core primitive and of the given extensions' primitives (A8).
     pub fn primitives(&self, extensions: &[&str]) -> Result<PrimitivesResult, ClientError> {
         self.call_typed(
