@@ -112,7 +112,7 @@ This follows from D-08 (analysis lives in Python). Points to settle before build
 - Notebooks run on a standard Jupyter kernel (`ipykernel`) started by Logos, using the Jupyter messaging protocol. Logos does not write its own kernel.
 - The kernel has the Logos Python client loaded and connected to the running project, so a notebook can read experiment results (Parquet) and provenance, and start runs.
 - Notebooks are ordinary `.ipynb` files in the project folder, so they also open in Jupyter or VS Code.
-- Placement: after the Python client exists (Phase 2), in the desktop app (Phase 3). Nothing in Phase 0 or 1 depends on it.
+- Placement: in the desktop app, after the Python client exists (both Phase 3 since D-21). Nothing in Phase 0, 1 or 2 depends on it.
 
 ## D-17 Launch commands are built as argument lists — accepted
 
@@ -139,3 +139,41 @@ Phase 1 Part L (recording, replaying and budgeting the LLM calls a model makes d
 ## D-21 The desktop app comes before programmatic access — accepted
 
 The desktop app moves from Phase 3 to Phase 2, and programmatic access (the local API service, the Python client and the MCP server, D-03) moves from Phase 2 to Phase 3. Thomas wants a usable GUI as early as possible, and the app needs nothing from those services: it sits directly on the Rust crates and the bridge (`logos-nlogox`, `logos-syntax`, `logos-project`, `logos-experiment`, `logos-bridge-client`, `logos-lsp`). The interface editor logic and widget layout (D-18) move with the app into Phase 2. The in-app assistant (D-04), Jupyter notebooks (D-16), recording and replay of models' LLM calls (D-20), the Logos LLM bridge for models, and experiment designs beyond BehaviorSpace stay with or move to Phase 3, since they use the programmatic layer or the app's later features. Phase 2's specification is written from Thomas's desktop design (`docs/desktop-design.md`). Accepted by Thomas, 2026-10-11.
+
+## D-22 The live view stays in the Interface tab, with a pop-out — accepted
+
+The view is a widget in the Interface tab, where the model puts it, as in NetLogo. A "Pop out view" command shows the same frames in a dockable panel or a separate window, so the view can sit beside the Code tab. The bridge sends each frame once; both places draw it. Design Q1. Accepted by Thomas, 2026-10-11.
+
+## D-23 Code changes reach the running model on Apply — accepted
+
+NetLogo's diagnostics appear while the user types, without touching the running model. The interactive workspace gets the new code only when the user presses Apply, which works like NetLogo's Check button. When applying would clear the world (for example because declarations changed), Logos says so first. Automatic recompiling was rejected because it can clear the world without warning. Design Q2. Accepted by Thomas, 2026-10-11.
+
+## D-24 Autosaves and crash-recovery copies go in the app data folder — accepted
+
+Logos keeps autosaves, crash-recovery copies, panel layouts and per-project app settings in the user's application data folder, keyed by project path. A project folder never contains stray copies of the model, and a NetLogo user opening the folder sees nothing new (D-19). Design Q5. Accepted by Thomas, 2026-10-11.
+
+## D-25 The app runs one run bridge per engine and one check bridge — accepted
+
+`logos-lsp` checks code in its own bridge started with `-Dorg.nlogo.noGenerator=true`, which removed about three quarters of the time of each check of AA4 (Phase 1, S5). The flag applies to the whole JVM, so models can't run at full speed in that bridge. The app therefore runs two bridge processes per engine: a run bridge that holds every project's interactive workspace and the experiment workers (D-09), and the check bridge, which never runs models. Both get explicit heap limits so that they fit together on a 16 GB machine. A bridge per project window was considered and set aside for its memory cost; it is revisited if a crash in one project affects others in practice. Design Q8, revised. Accepted by Thomas, 2026-10-11.
+
+## D-26 Phase 2 runs observer forever buttons; agent forever buttons come later — accepted
+
+In Phase 2, `workspace.run` runs one observer forever button at a time per workspace. Once-buttons of every kind (observer, turtle, patch, link) work, including during a run (queued between iterations). While one forever button runs, other forever buttons are disabled with a note saying why.
+
+Forever buttons of turtle, patch and link kind, where each agent runs until it stops, and several forever buttons running at once, as NetLogo allows, come later. Phase 2 prepares for them: `workspace.run` takes an `agents` field with the other kinds reserved, every notification already carries its run number, and the client keeps runs by run number. Stated by Thomas, 2026-10-11.
+
+## D-27 Logos-only experiment settings live in their own file — accepted
+
+Settings that BehaviorSpace doesn't have (workers, plot updates, output formats, and later LLM recording and budgets) are stored in a TOML file next to the model, `<model name>.experiments.toml`, with one table per experiment, and not in `logos.toml`. A separate file works for models that aren't projects yet, keeps `logos.toml` about the project, and leaves room for compatibility with other experiment formats later. The file carries a format version and keeps unknown keys. When the folder is a project, `logos.toml` lists it with role `config`. Stated by Thomas, 2026-10-11.
+
+## D-28 Git panel, `.nlogox` diff, terminal and detached panels move to Phase 3 — accepted
+
+The readable `.nlogox` diff (design G9) is needed most by the assistant's approval cards, which are Phase 3, so it moves there with the Git panel. The embedded terminal and detaching any panel other than the view also move to Phase 3. In Phase 2 the status bar shows the git branch and the number of changed files. Accepted by Thomas, 2026-10-11.
+
+## D-29 UI framework: Tauri 2 with CodeMirror 6, if spike F1 meets its targets — proposed
+
+The design (section 5) compares Tauri 2 with a web front end and CodeMirror 6, egui, and GPUI, and recommends Tauri: the code editor, Markdown, tables and plots are most of the app, and the web front end lets Logos reuse them. Its weak point is getting view frames from Rust into the web view on Windows, which spike F1 measures (Phase 2, Part F). Thomas decides after the F1 numbers.
+
+Electron was raised in review. It would run the same front-end code with its own Chromium on every platform. Thomas prefers to continue with the current plan and keep an Electron version as a possible later branch of the front end. If F1 fails on Windows, the first fallback is drawing the view in a native child surface inside the Tauri window.
+
+The desktop design itself is kept in the Project and not committed to the repository (Thomas, 2026-10-11). `docs/phase-2-spec.md` is the repository's record of what Phase 2 builds.

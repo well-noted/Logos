@@ -75,7 +75,7 @@ Models like MASTOC-LLM need API keys and other environment variables. Logos lets
 - Logos shows a stored value masked (`sk-…3f2a`). Changing or deleting a value asks for confirmation.
 - The user can unmask a value on request:
   - From the CLI, `logos secrets show NAME` prints it only after an interactive confirmation, and refuses when it isn't run in a terminal, so scripts and agents can't use it.
-  - In the desktop app (Phase 3), unmasking first asks the operating system to confirm the user where it offers that (Windows Hello, Touch ID or the account password on macOS, the keyring's unlock prompt on Linux), and otherwise asks for confirmation in Logos. The value is hidden again after 30 seconds, and a copied value is cleared from the clipboard after 30 seconds.
+  - In the desktop app (Phase 2, D-21), unmasking first asks the operating system to confirm the user where it offers that (Windows Hello, Touch ID or the account password on macOS, the keyring's unlock prompt on Linux), and otherwise asks for confirmation in Logos. The value is hidden again after 30 seconds, and a copied value is cleared from the clipboard after 30 seconds.
   - Each unmask is logged with the name and time, never the value.
   - Unmasking is never offered over the API, the MCP server or to the in-app assistant.
 - Provenance records which secret names a run used, never values. Recorded LLM requests have authentication headers removed before they are written.
@@ -211,12 +211,12 @@ logos lsp                         language server (Part S)
 ## Out of scope for Phase 1
 
 - The interface editor and its widget layout command (Phase 2, D-18).
-- The desktop app and the live view in a window (Phase 3; D-10 is decided).
-- The Python client, the local API service and the MCP server (Phase 2; D-03).
+- The desktop app and the live view in a window (Phase 2, D-21; D-10 is decided).
+- The Python client, the local API service and the MCP server (Phase 3, D-21; D-03).
 - Jupyter notebooks (D-16).
 - Experiment designs beyond BehaviorSpace's (Latin hypercube, Sobol, Morris; D-08) and sensitivity analysis.
-- The in-app assistant (D-04) and connecting coding assistants through the MCP server (Phase 2-3). Part L records the model's own LLM calls; it is not the assistant.
-- Logos's own LLM bridge for models (Phase 2). Part L records and replays calls made by any bridge, including MASTOC-LLM's and, later, Logos's.
+- The in-app assistant (D-04) and connecting coding assistants through the MCP server (Phase 3). Part L records the model's own LLM calls; it is not the assistant.
+- Logos's own LLM bridge for models (Phase 3). Part L records and replays calls made by any bridge, including MASTOC-LLM's and, later, Logos's.
 - 3D models.
 - Recording, replay and budgets for models that call language models (Part L; Phase 3, D-20).
 
