@@ -10,6 +10,11 @@ description = "Reads and edits NetLogo .nlogox files without losing anything: ed
 [dependencies]
 quick-xml = "0.38"
 thiserror = "2"
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+# Serialize and deserialize the typed widget model (for the desktop app).
+serde = ["dep:serde"]
 
 [dev-dependencies]
 logos-bridge-client = { path = "../logos-bridge-client" }
