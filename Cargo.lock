@@ -1099,6 +1099,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "logos-lsp"
+version = "0.0.0"
+dependencies = [
+ "logos-bridge-client",
+ "logos-protocol",
+ "logos-syntax",
+]
+
+[[package]]
 name = "logos-nlogox"
 version = "0.0.0"
 dependencies = [

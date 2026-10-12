@@ -1,0 +1,15 @@
+[package]
+name = "logos-lsp"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Editor support for NetLogo code: diagnostics now, the language server next"
+
+[dependencies]
+logos-protocol = { path = "../logos-protocol" }
+logos-syntax = { path = "../logos-syntax" }
+
+[dev-dependencies]
+logos-bridge-client = { path = "../logos-bridge-client" }
