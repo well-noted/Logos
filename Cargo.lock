@@ -1145,6 +1145,7 @@ version = "0.0.0"
 dependencies = [
  "logos-bridge-client",
  "logos-nlogox",
+ "logos-protocol",
  "rowan",
 ]
 

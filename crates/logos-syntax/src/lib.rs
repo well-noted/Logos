@@ -6,17 +6,23 @@
 //! bracket and parenthesis nesting. It never stops at an error: problems are returned as
 //! [`SyntaxError`]s with their spans, and the tree still covers the whole source.
 //!
-//! Full expression parsing needs the primitive table (`engine.primitives`) and is Phase 1 work.
+//! [`parse_with`] also parses procedure bodies into statements and expressions (Phase 1, Part
+//! S), using the primitive table from the user's NetLogo (`engine.primitives`, D-01) and the
+//! program's declarations, and reports what each name refers to.
 
 pub mod ast;
+mod expr;
 pub mod ident;
+pub mod language;
 pub mod lexer;
 mod parser;
 
 use std::ops::Range;
 
 pub use ast::{Breed, Declaration, Procedure, SourceFile, Structure};
+pub use expr::{Context, LocalDefinition, LocalKind, Owner, Reference, Target};
 pub use ident::segments;
+pub use language::Language;
 pub use lexer::{LexError, Token, lex};
 
 /// Kinds of tokens and nodes.
@@ -61,6 +67,38 @@ pub enum SyntaxKind {
     BRACKET_GROUP,
     /// `( ... )` inside a body.
     PAREN_GROUP,
+    // Nodes of the full parse (`parse_with`), inside a BODY.
+    /// A command with its arguments.
+    STATEMENT,
+    /// A reporter (primitive, procedure, variable) with its arguments; for an infix reporter
+    /// the left argument comes first.
+    REPORTER_APP,
+    /// A number, string, extension literal or constant.
+    LITERAL,
+    /// `( ... )` around a statement or an expression.
+    PARENS,
+    /// A name taken as a symbol argument.
+    SYMBOL,
+    /// A name being defined: after `let`, or an anonymous procedure's argument.
+    NAME,
+    /// `[ a [ b c ] ]` after `let` or `set`.
+    NAMES,
+    /// A primitive or procedure name alone where an anonymous procedure is expected.
+    CONCISE,
+    /// `[ commands ]` as a command block argument.
+    COMMAND_BLOCK,
+    /// `[ reporter ]` as a reporter block argument.
+    REPORTER_BLOCK,
+    /// `[ args -> commands ]` or `[ commands ]` as an anonymous command.
+    ANON_COMMAND,
+    /// `[ args -> reporter ]` or `[ reporter ]` as an anonymous reporter.
+    ANON_REPORTER,
+    /// The arguments and the arrow of an anonymous procedure.
+    ANON_PARAMS,
+    /// `[ 1 2 [ 3 ] ]` as a list value.
+    LITERAL_LIST,
+    /// `[ ... ]` passed as code, not parsed.
+    CODE_BLOCK,
     /// Tokens that could not be placed: top-level code outside a procedure, stray closers.
     ERROR,
 }
@@ -123,11 +161,52 @@ impl Parse {
 /// Lexes and parses NetLogo code (a model's code section or an `.nls` file).
 pub fn parse(source: &str) -> Parse {
     let (tokens, lex_errors) = lex(source);
-    let (green, mut errors) = parser::parse(source, &tokens);
+    let (green, mut errors, _, _) = parser::parse(source, &tokens, None);
     errors.extend(lex_errors.into_iter().map(|e| SyntaxError {
         span: e.span,
         message: e.message.into(),
     }));
     errors.sort_by_key(|e| (e.span.start, e.span.end));
     Parse { green, errors }
+}
+
+/// The result of [`parse_with`]: the tree, its errors, and what the names in procedure bodies
+/// refer to.
+#[derive(Debug, Clone)]
+pub struct FullParse {
+    pub parse: Parse,
+    /// Every name in a procedure body that refers to something, in source order.
+    pub references: Vec<Reference>,
+    /// Procedure parameters, `let` variables and anonymous procedure arguments.
+    pub locals: Vec<LocalDefinition>,
+}
+
+/// Parses NetLogo code with procedure bodies parsed into statements and expressions.
+///
+/// `context.structure` must hold the declarations and procedures of the whole program (this
+/// source and its `__includes` files); [`structure_of`] builds it.
+pub fn parse_with(source: &str, context: &Context) -> FullParse {
+    let (tokens, lex_errors) = lex(source);
+    let names = expr::Names::new(context);
+    let (green, mut errors, mut references, locals) = parser::parse(source, &tokens, Some(&names));
+    errors.extend(lex_errors.into_iter().map(|e| SyntaxError {
+        span: e.span,
+        message: e.message.into(),
+    }));
+    errors.sort_by_key(|e| (e.span.start, e.span.end));
+    references.sort_by_key(|r| r.span.start);
+    FullParse {
+        parse: Parse { green, errors },
+        references,
+        locals,
+    }
+}
+
+/// The declarations and procedures of a program made of these sources.
+pub fn structure_of<'s>(sources: impl IntoIterator<Item = &'s str>) -> Structure {
+    let mut s = Structure::default();
+    for src in sources {
+        s.add(&parse(src).source_file());
+    }
+    s
 }
