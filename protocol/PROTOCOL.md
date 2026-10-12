@@ -363,7 +363,7 @@ result: {}
 
 | Method | Params |
 |---|---|
-| `workspace.output` | `{ "workspace": WorkspaceId, "text": string }` — text printed by the model |
+| `workspace.output` | `{ "workspace": WorkspaceId, "text": string, "outputArea": bool }` — text printed by the model. `outputArea` is true for `output-print`, `output-show`, `output-type` and `output-write` (NetLogo's Output widget) and false for `print`, `show`, `type` and `write` (NetLogo's Command Center). `outputArea` was added after protocol 0; a missing value means false |
 | `run.observed` | `{ "workspace": WorkspaceId, "run": int, "ticks": number \| null, "values": [ {"ok": Value} \| {"error": ErrorData} ] }` |
 | `run.finished` | `{ "workspace": WorkspaceId, "run": int, "reason": "stopped" \| "completed" \| "halted" \| "error", "iterations": int, "ticks": number \| null, "elapsedMillis": number, "error": ErrorData \| null }` |
 
