@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Widget } from "./ipc";
 import { errorText } from "./ipc";
 import { Icon } from "./icons";
+import { refreshExperiments } from "./experiments";
 import { addActivity, dirty, model, notApplied, rightOpen, showToast } from "./state";
 
 export const editMode = signal(false);
@@ -15,7 +16,7 @@ export const selected = signal<number | null>(null);
 export const canUndo = signal(false);
 export const canRedo = signal(false);
 
-interface WidgetEdit { widgets: Widget[]; dirty: boolean; globalsChanged: boolean; canUndo: boolean; canRedo: boolean }
+export interface WidgetEdit { widgets: Widget[]; dirty: boolean; globalsChanged: boolean; canUndo: boolean; canRedo: boolean }
 
 export type Op =
   | { op: "bounds"; index: number; x: number; y: number; width: number; height: number }
@@ -29,7 +30,7 @@ export type Op =
 
 export interface World { minPxcor: number; maxPxcor: number; minPycor: number; maxPycor: number; patchSize: number }
 
-function applyResult(r: WidgetEdit) {
+export function applyResult(r: WidgetEdit) {
   const m = model.value;
   if (!m) return;
   model.value = { ...m, widgets: r.widgets };
@@ -55,11 +56,14 @@ export async function editWidget(op: Op, what: string): Promise<boolean> {
   }
 }
 
+/** Undoes or redoes the last interface or experiment change (they share one history). */
 export async function undoInterface(redo: boolean) {
   const m = model.value;
   if (!m) return;
-  try { applyResult(await invoke<WidgetEdit>("model_undo", { id: m.id, redo })); }
-  catch (e) { showToast(errorText(e)); }
+  try {
+    applyResult(await invoke<WidgetEdit>("model_undo", { id: m.id, redo }));
+    void refreshExperiments();
+  } catch (e) { showToast(errorText(e)); }
 }
 
 const KINDS: [string, string][] = [

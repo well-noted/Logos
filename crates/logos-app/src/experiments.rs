@@ -50,15 +50,30 @@ pub struct ExperimentView {
     pub variables: Vec<(String, Vec<String>)>,
     pub run_count: usize,
     pub settings: LogosSettings,
+    /// The elements inside the `<experiment>`, in order; fields whose element is missing
+    /// can't be edited yet.
+    pub parts: Vec<String>,
+    /// The value sets as written (stepped ones unexpanded), for the editor.
+    pub value_sets: Vec<logos_nlogox::ValueSet>,
 }
 
 /// Experiments stored in the model, with their Logos-only settings.
 pub fn list(model: &Path, model_text: &str) -> AppResult<Vec<ExperimentView>> {
     let file = SettingsFile::load(model);
+    let nlogox = logos_nlogox::Nlogox::parse(model_text).ok();
     Ok(parse_experiments(model_text)
         .map_err(err)?
         .into_iter()
-        .map(|e| ExperimentView {
+        .enumerate()
+        .map(|(i, e)| ExperimentView {
+            parts: nlogox
+                .as_ref()
+                .map(|n| n.experiment_parts(i))
+                .unwrap_or_default(),
+            value_sets: nlogox
+                .as_ref()
+                .map(|n| n.experiment_value_sets(i))
+                .unwrap_or_default(),
             run_count: e.runs().len(),
             settings: file.get(&e.name),
             name: e.name,

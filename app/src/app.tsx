@@ -137,7 +137,7 @@ function ModelDocument() {
         </>
       ) : doc.kind === "project" ? <ProjectDoc />
         : doc.kind === "secrets" ? <SecretsDoc />
-        : doc.kind === "experiment" ? <ExperimentDoc name={doc.name} />
+        : doc.kind === "experiment" ? <ExperimentDoc name={doc.name} docId={doc.id} />
         : <DashboardDoc runId={doc.runId} dir={doc.dir} />}
     </div>
   );
