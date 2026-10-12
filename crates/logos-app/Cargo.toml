@@ -16,20 +16,29 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 logos-bridge-client = { path = "../logos-bridge-client" }
+logos-experiment = { path = "../logos-experiment" }
 logos-lsp = { path = "../logos-lsp" }
 logos-nlogox = { path = "../logos-nlogox", features = ["serde"] }
 logos-protocol = { path = "../logos-protocol" }
 logos-project = { path = "../logos-project" }
+logos-secrets = { path = "../logos-secrets" }
 lsp-server = "0.7"
+lsp-types = "0.97"
+crossbeam-channel = "0.5"
+url = "2"
 # Tauri 2 (MIT OR Apache-2.0). `custom-protocol` serves app/dist from the binary.
 tauri = { version = "2", features = ["custom-protocol"] }
 # File dialogs (MIT OR Apache-2.0).
 tauri-plugin-dialog = "2"
 # Opening web links in the system browser (MIT OR Apache-2.0).
 tauri-plugin-opener = "2"
+# Copying a secret, and clearing it from the clipboard after 30 s (MIT OR Apache-2.0).
+tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+toml_edit = "0.25"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
 tempfile = "3"

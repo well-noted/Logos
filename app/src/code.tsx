@@ -13,9 +13,11 @@ import {
   StreamLanguage, HighlightStyle, syntaxHighlighting, bracketMatching, indentOnInput, foldGutter, foldKeymap,
 } from "@codemirror/language";
 import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from "@codemirror/autocomplete";
-import { linter, lintGutter, type Diagnostic } from "@codemirror/lint";
+import { lintGutter } from "@codemirror/lint";
+import { invoke } from "@tauri-apps/api/core";
+import { lspClient } from "./lsp";
 import { tags as t } from "@lezer/highlight";
-import { applyCode, dirty, model, notApplied, problems, setCode } from "./state";
+import { applyCode, dirty, model, notApplied, setCode } from "./state";
 import { Icon } from "./icons";
 
 const DECLARATIONS = new Set([
@@ -79,21 +81,6 @@ const theme = EditorView.theme({
   ".cm-lintRange-error": { backgroundImage: "none", textDecoration: "underline wavy var(--error)", textUnderlineOffset: "3px" },
 });
 
-/** NetLogo's compile errors from the last open or Apply, as editor diagnostics. Spans are
- * offsets into the code (PROTOCOL.md 5.2). */
-function compileErrors(): Extension {
-  return linter((view) => {
-    const len = view.state.doc.length;
-    const out: Diagnostic[] = [];
-    for (const p of problems.value) {
-      if (p.span === undefined) continue;
-      const from = Math.min(p.span[0], len), to = Math.max(from, Math.min(p.span[1], len));
-      out.push({ from, to: to === from ? Math.min(len, from + 1) : to, severity: "error", message: p.text, source: "NetLogo" });
-    }
-    return out;
-  }, { delay: 100 });
-}
-
 /** The open editor, so the outline can move the cursor. */
 let current: EditorView | null = null;
 
@@ -110,7 +97,12 @@ export function CodeTab() {
   useEffect(() => {
     if (!host.current || !m) return;
     let timer = 0;
-    const view = new EditorView({
+    let view: EditorView | null = null;
+    let cancelled = false;
+    invoke<string>("lsp_code_uri", { id: m.id }).catch(() => null).then((uri) => {
+      if (cancelled || !host.current) return;
+      const lsp: Extension[] = uri ? [lspClient().plugin(uri, "netlogo")] : [];
+      view = new EditorView({
       parent: host.current,
       state: EditorState.create({
         doc: m.code,
@@ -118,7 +110,7 @@ export function CodeTab() {
           lineNumbers(), highlightActiveLineGutter(), highlightSpecialChars(), history(), foldGutter(),
           drawSelection(), indentOnInput(), bracketMatching(), closeBrackets(), autocompletion(),
           rectangularSelection(), highlightActiveLine(), highlightSelectionMatches(), lintGutter(),
-          netlogo, syntaxHighlighting(highlight), theme, compileErrors(),
+          netlogo, syntaxHighlighting(highlight), theme, ...lsp,
           EditorView.contentAttributes.of({ "aria-label": "Model code" }),
           keymap.of([
             ...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap,
@@ -133,8 +125,13 @@ export function CodeTab() {
         ],
       }),
     });
-    current = view;
-    return () => { clearTimeout(timer); if (current === view) current = null; view.destroy(); };
+      current = view;
+    });
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      if (view) { if (current === view) current = null; view.destroy(); }
+    };
   }, [m?.id, m?.path]);
   return (
     <div class="split">
@@ -148,7 +145,7 @@ export function CodeTab() {
         </span>
         <span style="flex:1" />
         <span class="muted" style="font-size: 12px">
-          NetLogo's errors from the last Apply are underlined. Errors while typing come with the language server connection.
+          NetLogo checks the code as you type. Ctrl+click or F12 goes to a definition, F2 renames, Shift+F12 finds references.
         </span>
       </div>
       <div class="code-host" ref={host} />

@@ -7,13 +7,15 @@ import {
   output, problems, running, ticks, type Activity, type BottomTab, runCommand,
 } from "./state";
 import { revealOffset } from "./code";
+import { FilesPanel } from "./project";
+import { ExperimentsPanel, ResultsPanel } from "./experiments";
 
 const ACTIVITIES: { id: Activity; label: string; icon: string; later?: string }[] = [
   { id: "model", label: "Model", icon: "model" },
-  { id: "files", label: "Files", icon: "files", later: "The project's files and their roles come with the project screens (step 14)." },
+  { id: "files", label: "Files", icon: "files" },
   { id: "search", label: "Search", icon: "search", later: "Search and replace across the model comes in step 19." },
-  { id: "experiments", label: "Experiments", icon: "experiments", later: "The experiment editor and run dashboard come in steps 16 and 17. Until then, `logos run` runs experiments." },
-  { id: "results", label: "Results", icon: "results", later: "Results and run records come in step 18." },
+  { id: "experiments", label: "Experiments", icon: "experiments" },
+  { id: "results", label: "Results", icon: "results" },
   { id: "llm", label: "LLM", icon: "llm", later: "The LLM bridge editor and call log are Phase 3." },
   { id: "git", label: "Git", icon: "git", later: "The Git panel is Phase 3 (D-28)." },
 ];
@@ -39,7 +41,7 @@ export function SidePanel() {
     <aside class="sidepanel" aria-label={a.label}>
       <div class="panel-head"><span>{a.label}</span></div>
       <div class="panel-body">
-        {a.id === "model" ? <Outline /> : <p class="empty-note">{a.later}</p>}
+        {a.id === "model" ? <Outline /> : a.id === "files" ? <FilesPanel /> : a.id === "experiments" ? <ExperimentsPanel /> : a.id === "results" ? <ResultsPanel /> : <p class="empty-note">{a.later}</p>}
       </div>
     </aside>
   );

@@ -165,6 +165,64 @@ class Workspace:
 
 workspaces = {}
 next_ws = [1]
+model_paths = {}
+experiments = {}
+next_exp = [1]
+
+
+def load_experiment(ws, p):
+    """Reads an experiment from the model's XML and lists its runs in BehaviorSpace order."""
+    root = ET.parse(model_paths[ws.id]).getroot()
+    for e in root.iter("experiment"):
+        if e.attrib.get("name") != p["name"]:
+            continue
+        variables = []
+        for v in e.iter("enumeratedValueSet"):
+            variables.append((v.attrib["variable"], [x.attrib["value"] for x in v.iter("value")]))
+        for v in e.iter("steppedValueSet"):
+            first, step, last = (float(v.attrib[k]) for k in ("first", "step", "last"))
+            vals, x = [], first
+            while x <= last + 1e-9:
+                vals.append(repr(round(x, 10)).rstrip("0").rstrip(".") if x != int(x) else str(int(x)))
+                x += step
+            variables.append((v.attrib["variable"], vals))
+        reps = int(e.attrib.get("repetitions", "1"))
+        seq = e.attrib.get("sequentialRunOrder", "true") == "true"
+        import itertools
+        combos = list(itertools.product(*[vals for _, vals in variables])) if variables else [()]
+        runs = []
+        if seq:
+            for c in combos:
+                runs.extend([c] * reps)
+        else:
+            for _ in range(reps):
+                runs.extend(combos)
+        cell = lambda t: {"value": float(t) if re.match(r"^-?\d+(\.\d+)?$", t) else t.strip('"'), "text": t.strip('"')}
+        eid = next_exp[0]
+        next_exp[0] += 1
+        metrics = [m.text or "" for m in e.iter("metric")]
+        experiments[eid] = {"metrics": metrics, "every": e.attrib.get("runMetricsEveryStep") == "true", "runs": runs, "names": [n for n, _ in variables]}
+        return {"experiment": eid, "name": p["name"], "repetitions": reps, "sequentialRunOrder": seq,
+                "runMetricsEveryStep": e.attrib.get("runMetricsEveryStep") == "true", "runMetricsCondition": "",
+                "timeLimit": int(e.attrib.get("timeLimit", "0")), "exitCondition": (e.findtext("exitCondition") or ""),
+                "preExperiment": "", "setup": e.findtext("setup") or "", "go": e.findtext("go") or "", "postRun": "",
+                "postExperiment": "", "metrics": metrics, "variables": [n for n, _ in variables],
+                "runs": [[dict(name=n, **cell(v)) for n, v in zip([n for n, _ in variables], c)] for c in runs],
+                "worldDimensions": {"minPxcor": ws.min_px, "maxPxcor": ws.max_px, "minPycor": ws.min_py, "maxPycor": ws.max_py}}
+    return None
+
+
+def run_experiment(ws, p):
+    e = experiments[p["experiment"]]
+    n = p["runNumber"]
+    steps = 15 + (n * 7) % 11
+    time.sleep(0.4 + 0.05 * (n % 5))
+    settings = [{"name": name, "value": v, "text": v} for name, v in zip(e["names"], e["runs"][n - 1])]
+    def cells(step):
+        return [{"value": round(10 + step * 0.5 + (n % 7) + i, 3), "text": str(round(10 + step * 0.5 + (n % 7) + i, 3))} for i in range(len(e["metrics"]))]
+    measurements = [{"step": s, "values": cells(s)} for s in (range(steps + 1) if e["every"] else [steps])]
+    return {"runNumber": n, "settings": settings, "reason": "completed", "steps": steps, "measurements": measurements,
+            "errors": [], "elapsedMillis": 400.0}
 
 
 def view_dims(path):
@@ -245,6 +303,7 @@ def handle(msg):
         wid = next_ws[0]
         next_ws[0] += 1
         workspaces[wid] = Workspace(wid, view_dims(p["path"]))
+        model_paths[wid] = p["path"]
         return reply(id_, {"workspace": wid, "modelVersion": "NetLogo 7.0.4", "compiled": True, "errors": []})
     ws = workspaces.get(p.get("workspace"))
     if method.startswith("workspace.") and ws is None:
@@ -298,6 +357,14 @@ def handle(msg):
             if ws.run is not None:
                 ws.run["stop"] = True
         workspaces.pop(ws.id, None)
+        return reply(id_, {})
+    if method == "experiment.load":
+        return reply(id_, load_experiment(ws, p))
+    if method == "experiment.run":
+        return reply(id_, run_experiment(ws, p))
+    if method == "experiment.command":
+        return reply(id_, {"error": None})
+    if method == "experiment.close":
         return reply(id_, {})
     if method == "workspace.program":
         return reply(id_, {"globals": [], "interfaceGlobals": [], "turtlesOwn": [], "patchesOwn": [], "linksOwn": [], "breeds": [], "procedures": []})

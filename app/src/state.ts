@@ -70,6 +70,55 @@ export function inspect(target: Inspected) {
 }
 
 export type ModelTab = "interface" | "info" | "code";
+
+// ---- documents in the editor area (design 2.3) ---------------------------------------------
+
+export type Doc =
+  | { id: "model"; kind: "model" }
+  | { id: "project"; kind: "project" }
+  | { id: "secrets"; kind: "secrets" }
+  | { id: string; kind: "experiment"; name: string }
+  | { id: string; kind: "dashboard"; runId: number; name: string; dir?: string };
+
+export const docs = signal<Doc[]>([]);
+export const activeDoc = signal<string>("model");
+
+export function openDoc(doc: Doc) {
+  if (!docs.value.some((d) => d.id === doc.id)) docs.value = [...docs.value, doc];
+  activeDoc.value = doc.id;
+}
+
+export function closeDoc(id: string) {
+  if (id === "model") return;
+  docs.value = docs.value.filter((d) => d.id !== id);
+  if (activeDoc.value === id) activeDoc.value = "model";
+}
+
+// ---- project ------------------------------------------------------------------------------
+
+export interface ProjectView {
+  dir: string; isProject: boolean; model: string; engine?: string | null;
+  files: { path: string; role: string; description?: string | null; dictionary?: string | null; exists: boolean }[];
+  required: string[]; optional: string[]; requirements?: string | null; interpreter?: string | null; source?: string | null;
+}
+export interface Finding { severity: "ok" | "warning" | "error"; subject: string; message: string }
+export const project = signal<ProjectView | null>(null);
+export const findings = signal<Finding[]>([]);
+
+export async function refreshProject() {
+  const m = model.value;
+  if (!m) { project.value = null; findings.value = []; return; }
+  try {
+    project.value = await invoke<ProjectView>("project_status", { id: m.id });
+    findings.value = project.value.isProject ? await invoke<Finding[]>("project_check", { id: m.id }) : [];
+    const checkProblems = findings.value
+      .filter((f) => f.severity !== "ok")
+      .map((f) => ({ text: `${f.subject}: ${f.message}`, source: f.severity === "error" ? "check" : "check (warning)" }));
+    problems.value = [...problems.value.filter((p) => !p.source.startsWith("check")), ...checkProblems];
+  } catch (e) {
+    addLog("warning", `Project: ${errorText(e)}`);
+  }
+}
 export const modelTab = signal<ModelTab>("interface");
 
 // ---- layout -------------------------------------------------------------------------------
@@ -138,6 +187,14 @@ export async function init() {
       }
     }
   });
+  on("model-widgets", async (e) => {
+    const m = model.value;
+    if (!m || e.model !== m.id) return;
+    const widgets = await ipc.widgets(m.id);
+    model.value = { ...m, widgets };
+    dirty.value = true;
+    addActivity("Rename changed widgets or experiments");
+  });
   on("model-error", (e) => { if (e.model === model.value?.id) report(e.error, "Command"); });
   const first = await ipc.startupModel();
   if (first) {
@@ -205,6 +262,9 @@ function loadView(view: ModelView) {
     bottomTab.value = "problems";
   }
   refreshOutline();
+  docs.value = [{ id: "model", kind: "model" }];
+  activeDoc.value = "model";
+  refreshProject();
   document.title = `${view.name} - Logos`;
 }
 
@@ -226,6 +286,8 @@ export async function closeModel(): Promise<boolean> {
   try { await ipc.close(m.id); } catch { /* the engine may be gone */ }
   model.value = null;
   running.value = null;
+  docs.value = [];
+  project.value = null;
   document.title = "Logos";
   return true;
 }
