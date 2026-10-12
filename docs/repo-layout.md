@@ -14,6 +14,7 @@ logos/
 ├── AGENTS.md                  instructions for AI agents: build, test, PR rules
 ├── crates/
 │   ├── logos-syntax/          lexer, lossless syntax tree and expression parser for NetLogo code
+│   ├── logos-lsp/             editor support: diagnostics, and the language server (Part S)
 │   ├── logos-nlogox/          lossless .nlogox reader and writer
 │   ├── logos-project/         projects: logos.toml, file detection (init), checks (check)
 │   ├── logos-secrets/         secrets: OS credential store or encrypted file, .env import
@@ -160,6 +161,7 @@ cargo test -p logos-syntax --test corpus -- --nocapture                         
 cargo test -p logos-syntax --test corpus --release -- --nocapture b7                  # B7
 cargo test -p logos-syntax --test corpus -- --ignored --nocapture                     # B5
 cargo test -p logos-syntax --test full -- --ignored --nocapture --test-threads=1     # S1, S2, S6
+cargo test -p logos-lsp --test s4 -- --ignored --nocapture                             # S4
 ```
 
 The E1 test `e1_netlogo_behaviorspace_suite` also runs the BehaviorSpace test cases from NetLogo's own repository and compares the table output with NetLogo's expected files. It reads them from `corpus/.cache/NetLogo-7.0.4` (the source tree at tag `v7.0.4`; only `test/lab` is needed), or from the folder in `LOGOS_NETLOGO_SRC` (for example the `v7.0.4` worktree described under "NetLogo source"), and is skipped when neither is there.
