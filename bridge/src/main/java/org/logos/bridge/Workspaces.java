@@ -348,7 +348,22 @@ final class Workspaces {
             }
             List<Object> errors = new ArrayList<>();
             try {
-                h.ws = HeadlessWorkspace.newInstance();
+                LogosWorkspace lw =
+                        (LogosWorkspace) HeadlessWorkspace.newInstance(LogosWorkspace.class);
+                long wid = h.id;
+                // print, show, type and write go to the client (workspace.output).
+                lw.setOutputSink((text, toOutputArea) -> {
+                    Map<String, Object> note = new LinkedHashMap<>();
+                    note.put("workspace", wid);
+                    note.put("text", text);
+                    note.put("outputArea", toOutputArea);
+                    try {
+                        outbox.notify("workspace.output", note);
+                    } catch (IOException e) {
+                        log.println("logos-bridge: cannot send output: " + e.getMessage());
+                    }
+                });
+                h.ws = lw;
                 if (fromString) {
                     h.ws.openString(contents);
                 } else {
