@@ -238,6 +238,20 @@ impl Bridge {
         )
     }
 
+    /// Compiles `source` (a version of the model's code) the way opening the model would,
+    /// without installing it, and returns NetLogo's compile errors.
+    pub fn check(
+        &self,
+        workspace: WorkspaceId,
+        source: &str,
+    ) -> Result<logos_protocol::CheckResult, ClientError> {
+        self.call_typed(
+            "workspace.check",
+            logos_protocol::CheckParams { workspace, source },
+            DEFAULT_TIMEOUT,
+        )
+    }
+
     /// What NetLogo's compiler front end resolves each procedure call and variable reference
     /// in `source` (the model's code) to, in the workspace's program context.
     pub fn references(

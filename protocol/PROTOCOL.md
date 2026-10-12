@@ -168,6 +168,17 @@ result: {}
 
 Errors: `1001 CompilerError`, `1002 RuntimeError`.
 
+**`workspace.check`**
+
+Compiles `source`, a version of the model's code section, the way opening the model would (with the workspace's interface globals, extensions, include files and system dynamics code), without installing it: the workspace keeps running the code it has. Returns NetLogo's compile errors; NetLogo stops at the first, so there is at most one. Editors call it as the user types (D-07).
+
+```
+params: { "workspace": WorkspaceId, "source": string }
+result: { "errors": [ { "message": string, "span": SourceSpan } ] }
+```
+
+Offsets in the span are UTF-16 code units into `source`, or into the include file named by `file`.
+
 **`workspace.references`**
 
 What NetLogo's compiler front end resolves each procedure call and variable reference in `source` to. The bridge parses `source` again with NetLogo's front end (`org.nlogo.parse.FrontEnd`) in the workspace's dialect, with its interface globals, extensions and include files, and walks the syntax trees. The trees from the front end are used because the optimizer and bytecode generator rewrite compiled procedures. Used to check Logos's own parser (S1). Code generated from a system dynamics diagram is not included.
