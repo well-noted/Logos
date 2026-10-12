@@ -168,6 +168,21 @@ result: {}
 
 Errors: `1001 CompilerError`, `1002 RuntimeError`.
 
+**`workspace.references`**
+
+What NetLogo's compiler front end resolves each procedure call and variable reference in `source` to. The bridge parses `source` again with NetLogo's front end (`org.nlogo.parse.FrontEnd`) in the workspace's dialect, with its interface globals, extensions and include files, and walks the syntax trees. The trees from the front end are used because the optimizer and bytecode generator rewrite compiled procedures. Used to check Logos's own parser (S1). Code generated from a system dynamics diagram is not included.
+
+```
+params: { "workspace": WorkspaceId, "source": string }   // the model's code section
+result: { "references": [ { "start": int, "end": int,   // UTF-16 offsets
+                            "file": string | null,      // include file, null for source
+                            "kind": "procedure" | "global" | "turtle" | "patch" | "link"
+                                    | "turtle-or-link" | "breed" | "local",
+                            "name": string } ] }        // lower case, as written
+```
+
+Arguments of concise anonymous procedures (`foreach xs print`) are made up by NetLogo and not reported. A compile error is returned as `1001`.
+
 **`workspace.observe`**
 
 Evaluates reporters without affecting the run (D-14). Each reporter runs with a job owner holding a clone of `world.mainRNG`, the same way BehaviorSpace evaluates metrics. Reporters that change model state (`[set x 0] of turtles` and similar) are not prevented by the bridge; avoiding them is the caller's responsibility.

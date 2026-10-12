@@ -365,6 +365,33 @@ pub struct ArgType {
     pub mask: u32,
 }
 
+/// Params of `workspace.references`.
+#[derive(Debug, Serialize)]
+pub struct ReferencesParams<'a> {
+    pub workspace: WorkspaceId,
+    pub source: &'a str,
+}
+
+/// Result of `workspace.references`: what NetLogo's front end resolves names to.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ReferencesResult {
+    pub references: Vec<ResolvedReference>,
+}
+
+/// A procedure call or variable reference as NetLogo resolves it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ResolvedReference {
+    /// Offsets in UTF-16 code units into the source (or the include file).
+    pub start: usize,
+    pub end: usize,
+    /// The include file, or `None` for the source sent.
+    pub file: Option<String>,
+    /// `procedure`, `global`, `turtle`, `patch`, `link`, `turtle-or-link`, `breed`, `local`.
+    pub kind: String,
+    /// Lower case, as written.
+    pub name: String,
+}
+
 /// Result of `workspace.program`: the compiled model's declarations and procedures as NetLogo
 /// holds them, names in upper case, NetLogo's built-in variables left out.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
