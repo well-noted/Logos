@@ -4,7 +4,7 @@ Phase 2 is the Logos desktop app (D-21). A NetLogo user opens a `.nlogox` and se
 
 The app sits directly on the Phase 1 crates (`logos-nlogox`, `logos-syntax`, `logos-lsp`, `logos-bridge-client`, `logos-experiment`, `logos-project`, `logos-secrets`) and the bridge. The programmatic layer (API, Python client, MCP server) is Phase 3 and the app doesn't depend on it.
 
-The source for this specification is Thomas's design, `desktop-design.md`, with its wireframes and flows. The design is kept in the Project and is not committed to the repository. Section and gap numbers below (3.2, G4) refer to it. Decisions D-22 to D-29 record what Thomas settled from the design's open questions.
+The source for this specification is Thomas's design, `desktop-design.md`, with its wireframes and flows. The design is kept in the Project and is not committed to the repository. Section and gap numbers below (3.2, G4) refer to it. Decisions D-22 to D-32 record what Thomas settled from the design's open questions.
 
 Engine: NetLogo 7.0.4 (D-05). Test models: AA4-Combined (D-15), MASTOC-LLM, and Models Library models named per criterion. Platforms: Windows first; macOS and Linux must build, start and pass the criteria marked for them.
 
@@ -68,7 +68,7 @@ Protocol version 1. Each item is one PR touching `protocol/PROTOCOL.md`, `crates
 - **Agent state, version 1.** The Phase 0 layout (PROTOCOL 6.2) is replaced. The new layout adds links (end points, color, thickness, shape index, breed index, hidden) and a layout version byte, and keeps turtle and patch columns as they are. It is still read without the random number generator.
 - **Commands during a run (G1).** `workspace.command` during a `workspace.run` is queued and runs between two iterations, on the main random number generator, in arrival order. Its response is sent when it has run. This is how sliders, switches, choosers, input boxes, once-buttons, the Command Center and inspector edits write while a forever button runs. The results of a run with queued commands match the same commands sent between `repeat 1` runs.
 - **Run settings during a run (G2).** `workspace.runSettings` changes the delay between iterations (NetLogo's speed slider) and the view, agent and observe stream settings of a run in progress. The speed slider's mapping to a delay follows NetLogo's GUI at `v7.0.4` (read, not copied, D-01).
-- **View updates on ticks.** A run's view stream can send frames per iteration (the default) or only when `ticks` changed since the last frame (NetLogo's "on ticks"). NetLogo's "continuous" updates, which redraw inside a procedure, are not offered (design Q3, see "Open items").
+- **View updates on ticks.** A run's view stream can send frames per iteration (the default) or only when `ticks` changed since the last frame (NetLogo's "on ticks"). NetLogo's "continuous" updates, which redraw inside a procedure, are not offered (D-30).
 - **Plots (G4).** Before the protocol change, the PR settles PROTOCOL 9's open point: which random number generator NetLogo 7.0.4 uses for plot code in a headless workspace, read from the `v7.0.4` source and confirmed by a test. Then:
   - `workspace.plots` returns every plot's definition (name, axis ranges, autoplot, legend, pens with color, mode, interval and their points).
   - During a run, a `run.plots` notification sends each pen's new points since the last one, and events for plot clear and pen reset, after each iteration that changed a plot, at most at the view's frame rate. After a command, the same changes are sent with the snapshot.
@@ -97,12 +97,12 @@ Protocol version 1. Each item is one PR touching `protocol/PROTOCOL.md`, `crates
 
 - **Crates and folders.** `crates/logos-app` (the Tauri host, depending on the core crates) and `app/` (the front end). The front end is TypeScript with a small UI library chosen in the step's PR, with its license listed. No server and no network port except the F1 transport if a WebSocket is chosen, bound to `127.0.0.1` with a per-session token.
 - **Launcher** (design 2.1, 3.1): recent projects, open a model or folder, convert a legacy `.nlogo` (D-06), open a Models Library example, engine status.
-- **First launch** (design 3.1): find NetLogo in the order in `repo-layout.md` ("Finding NetLogo"), list installs with versions, select 7.0.4 when found; otherwise explain, link to NetLogo's download page and offer "Choose folder…" (design Q6, see "Open items"). Start the bridge and show `engine.hello`, or the bridge's log lines and the path tried.
+- **First launch** (design 3.1): find NetLogo in the order in `repo-layout.md` ("Finding NetLogo"), list installs with versions, select 7.0.4 when found; otherwise explain, link to NetLogo's download page and offer "Choose folder…" (D-31). Start the bridge and show `engine.hello`, or the bridge's log lines and the path tried.
 - **Bridges** (D-25). One run bridge per engine for the whole app, and the language server's check bridge (`-Dorg.nlogo.noGenerator=true`). Both get explicit heap limits set in the app's settings, with defaults chosen from F1 and step 7 measurements so that both fit with the OS on a 16 GB machine. Both exit when the app exits or crashes (stdin closes, A10).
 - **Project window regions** (design 2.2): menu and title bar, activity bar (Model, Files, Search, Experiments, Results; LLM and Git entries are Phase 3), side panel, editor area with tabs and one split, right panel (Inspectors; room for the assistant), bottom panel (Command Center, Output, Problems, Log, Activity), status bar.
 - **Command palette** with every action, and rebindable shortcuts.
 - **Settings**: user settings in the app data folder, project settings in the app data folder keyed by project path (D-19, D-24); a searchable form with the JSON source available.
-- **Themes**: light and dark, following the system by default, and font size. The color system is designed in this step; the wireframes are grayscale.
+- **Themes** (D-32): several built-in themes for the user to pick from, at least light, dark, a high-contrast light and a high-contrast dark theme, with the system's light or dark setting followed by default and the system's high-contrast mode respected where the platform reports it. A custom theme mode lets the user start from any built-in theme and change its colors and fonts in a theme editor with a live preview; custom themes are saved as files in the app data folder and can be exported and imported. Font family and size for the interface and for code are set separately. Themes cover the code editor, plots, the Interface tab's widgets and the app's own colors; the view keeps NetLogo's rendering (D-10). The color system is designed in this step; the wireframes are grayscale.
 - **Activity log** (G13, the log part): every action that changes a file or the running model, with time and actor ("user" in Phase 2), shown in the Activity panel and stored in the app data folder.
 - **Logs and crash reports** go to the app data folder and never contain secret values.
 
@@ -113,6 +113,7 @@ Protocol version 1. Each item is one PR touching `protocol/PROTOCOL.md`, `crates
 | A1 | Start time | Release build on Thomas's machine: launcher shown within 2 s of start; AA4 Interface tab with its first view frame within 5 s of choosing it (A2 took 2.91 s to the first reporter) |
 | A2 | No bridge left behind | Closing the app, and killing its process, leaves no run or check bridge running after 3 s, on Windows, Linux and macOS |
 | A3 | Engine discovery | With NetLogo 7.0.4 in `C:\Program Files\NetLogo 7.0.4`, in a folder chosen by the user, and missing: each case shows the right screen and the bridge starts in the first two |
+| A4 | Themes | Every built-in theme passes WCAG 2.2 AA contrast (4.5:1 for text, 3:1 for controls and focus indicators), checked by a test over each theme's color tokens. The theme editor warns when a custom theme's text or focus colors fall below those ratios. A custom theme survives a restart and an export and import |
 
 ---
 
@@ -262,11 +263,11 @@ The checks that span every screen, run at the end on all platforms.
 
 Each step is one PR, or a few with one purpose each (AGENTS.md). Each step that needs Thomas's machine ends with a test handoff in the Project.
 
-1. Docs: this specification, D-22 to D-29, and fixes to text made out of date by D-21.
+1. Docs: this specification, D-22 to D-32, and fixes to text made out of date by D-21.
 2. Spike F1 (`spikes/f1-tauri`) and its measurement handoff. F1-F4. Thomas decides the framework.
 3. Protocol 1: snapshots and agent state version 1 with links. B1.
 4. Protocol 1: commands during a run, run settings, view updates on ticks, and the `agents` hook. B2, B6.
-5. App shell: `logos-app`, `app/`, launcher, first launch, both bridges, project window regions, command palette, settings, themes, activity log. A1-A3.
+5. App shell: `logos-app`, `app/`, launcher, first launch, both bridges, project window regions, command palette, settings, themes, activity log. A1-A4.
 6. Typed widget model in `logos-nlogox` (read and attribute writes).
 7. Model screen, running: widgets, view, buttons, sliders and the other inputs, monitors, Command Center, Output, speed and view updates, Info tab rendered. M1, M3, part of M5. **Thomas can open and run models in the app from here.**
 8. Plots: the plot generator question, protocol (`workspace.plots`, `run.plots`), plots in the app. B3, B4, rest of M5.
@@ -290,15 +291,13 @@ Each step is one PR, or a few with one purpose each (AGENTS.md). Each step that 
 - Jupyter notebooks and "Open in notebook" (D-16).
 - The Git panel and the readable `.nlogox` diff (G9), the embedded terminal, and detaching panels other than the view (D-28).
 - Forever buttons of turtle, patch and link kind, and more than one forever button running at once (D-26; the protocol hooks are in Phase 2).
-- NetLogo's "continuous" view updates (design Q3).
-- Downloading or installing NetLogo from the app (design Q6).
+- NetLogo's "continuous" view updates (D-30).
+- Downloading or installing NetLogo from the app (D-31).
 - Experiment designs beyond BehaviorSpace (Phase 3).
 - 3D models.
 
 ## Open items
 
-- **Design Q3**, continuous view updates: this specification assumes Thomas's agreement to the design's recommendation (offer per-iteration and on-ticks updates only, and explain the difference in the UI).
-- **Design Q6**, NetLogo not installed: this specification assumes the design's recommendation (link to NetLogo's download page).
 - **The framework** is decided after step 2.
 - The Phase 1 items that remain open (the phase-done use of `logos run` results, K1 on macOS, the AA4 reference tables) don't block Phase 2.
 

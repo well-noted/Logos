@@ -177,3 +177,15 @@ The design (section 5) compares Tauri 2 with a web front end and CodeMirror 6, e
 Electron was raised in review. It would run the same front-end code with its own Chromium on every platform. Thomas prefers to continue with the current plan and keep an Electron version as a possible later branch of the front end. If F1 fails on Windows, the first fallback is drawing the view in a native child surface inside the Tauri window.
 
 The desktop design itself is kept in the Project and not committed to the repository (Thomas, 2026-10-11). `docs/phase-2-spec.md` is the repository's record of what Phase 2 builds.
+
+## D-30 No "continuous" view updates in Phase 2 — accepted
+
+NetLogo's "continuous" view updates redraw the view inside a procedure. The bridge takes frames between iterations, so the app offers two settings: a frame after every iteration, and a frame when `ticks` changed (NetLogo's "on ticks"). The UI explains how these differ from NetLogo's "continuous". A bridge mode that renders during an iteration would change timing and needs bridge work; it can be revisited if users need it. Design Q3. Accepted by Thomas, 2026-10-11.
+
+## D-31 Logos doesn't download or install NetLogo — accepted
+
+When no NetLogo install is found on first launch, Logos explains that it runs models on NetLogo itself, links to NetLogo's download page, and lets the user choose a folder. It does not download or install NetLogo. Design Q6. Accepted by Thomas, 2026-10-11.
+
+## D-32 Several themes and a custom theme mode — accepted
+
+The app ships several built-in themes for the user to choose from, including high-contrast light and dark themes, and a custom theme mode in which the user starts from a built-in theme and changes its colors and fonts. Built-in themes meet WCAG 2.2 AA contrast, and the theme editor warns when a custom theme falls below it. Custom themes are files in the app data folder that can be exported and imported. Stated by Thomas, 2026-10-11, as an accessibility requirement.
