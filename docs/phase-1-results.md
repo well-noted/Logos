@@ -23,14 +23,20 @@ Measured 2026-10-11 on Linux (cloud, no Secret Service, so the encrypted file st
 
 ## Part E: experiments and provenance
 
-Measured 2026-10-11 on Linux (cloud, 2 processors, OpenJDK 21).
+Measured 2026-10-11 on Linux (cloud, 2 processors, OpenJDK 21) and on Windows (Thomas's Surface Laptop Studio: Intel Core i7-11370H, 4 cores, 8 logical processors, 16 GB RAM; NetLogo's bundled Java).
 
 The bridge reads experiments with NetLogo's own loader and runs each run with NetLogo's own BehaviorSpace code (`org.nlogo.lab.Worker.Runner`), so settings, stop conditions, metric timing, sub-experiments and error handling are BehaviorSpace's by construction. Logos schedules the runs and writes the output (PROTOCOL.md section 5.4).
 
 | # | Criterion | Result | Status |
 |---|---|---|---|
-| E1 | Results match NetLogo | NetLogo's own BehaviorSpace test cases (`test/lab` at v7.0.4): all 36 table outputs identical, covering metrics every step, stop conditions, time limits, setting `random-seed` and world size, sub-experiments, runtime errors in setup, go and metrics, and experiments stored in a model. Two files in that folder (`testStats`, `testStatsExcludeMetrics`) are not table references: NetLogo's test uses them only as input to its statistics output, and NetLogo 7.0.4's headless BehaviorSpace doesn't reproduce them either. AA4 `N3-limit1`: all 60 rows identical to the Windows reference table, as text. AA4's other seven experiments: reference tables being recorded with NetLogo's headless BehaviorSpace (step 6) | Partly met |
-| E2 | Parquet output | `results.parquet`, one row per measurement, typed columns. For all 36 NetLogo test cases every value read back from Parquet equals the table output. AA4 not yet checked | Partly met |
-| E3 | Provenance | Step 8 | Open |
-| E4 | Resume | `logos run --resume DIR` runs only the runs the folder doesn't have; Ctrl-C stops runs in progress after their current step and they are not saved. Checked here on a 6-run experiment interrupted after 3 runs. The comparison with an uninterrupted run on AA4 is in the test handoff | Partly met |
-| E5 | Throughput | Step 8, on Thomas's machine. For reference, `N3-limit1` took 277 s here with 2 workers | Open |
+| E1 | Results match NetLogo | NetLogo's own BehaviorSpace test cases (`test/lab` at v7.0.4): all 36 table outputs identical on Linux and Windows, covering metrics every step, stop conditions, time limits, setting `random-seed` and world size, sub-experiments, runtime errors in setup, go and metrics, and experiments stored in a model. Two files in that folder (`testStats`, `testStatsExcludeMetrics`) are not table references: NetLogo's test uses them only as input to its statistics output, and NetLogo 7.0.4's headless BehaviorSpace doesn't reproduce them either. AA4: all eight experiments (1,720 runs) identical, row for row, to tables written by NetLogo's headless BehaviorSpace on Windows | Met |
+| E2 | Parquet output | `results.parquet`, one row per measurement, typed columns. Every value read back equals the table output, for the 36 NetLogo test cases and all eight AA4 experiments | Met |
+| E3 | Provenance | Each finished run is saved with its settings, measurements, errors and timing. Hashes of the model, project and input files, engine versions and the operating system are not recorded yet | Open |
+| E4 | Resume | AA4 `N3-limit1` on Windows: the process was killed after 3 runs had finished; `logos run --resume` ran the other 57, and the table is identical to NetLogo's reference table. No bridge process was left running. Ctrl-C (stop after the current step, not saved) checked on Linux | Met |
+| E5 | Throughput | `N3-limit1`, 8 workers against NetLogo with 8 threads, on Thomas's machine. Release build: 165.1, 170.9 and 167.5 s; NetLogo: 211.2, 180.1 and 179.1 s. A debug build is slower than NetLogo (median 207.0 s), so timings are taken with release builds | Met |
+
+Notes from the Windows runs:
+
+- `netlogo-headless.bat` in `C:\Program Files\NetLogo 7.0.4` fails because of the space in the path (D-17). Reference tables were recorded by starting NetLogo's bundled `java.exe` directly.
+- The seven new AA4 reference tables (19 MB) are in `corpus/reference` on Thomas's machine and not committed.
+- One bridge failed to start with Windows error 1455 (page file too small) while a NetLogo experiment with 8 threads was running at the same time. Not seen otherwise.
