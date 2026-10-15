@@ -69,7 +69,7 @@ The `logos` command line runs and checks models and experiments without the app.
 ## Building and running
 
 ```
-git clone <this repository>
+git clone https://github.com/well-noted/Logos.git
 cd Logos
 
 # 1. The bridge between Logos and NetLogo (needs NetLogo 7.0.4 installed)
